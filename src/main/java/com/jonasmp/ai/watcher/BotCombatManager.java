@@ -1,6 +1,10 @@
 package com.jonasmp.ai.watcher;
 
 import com.jonasmp.ai.bootstrap.CoreBootstrap;
+import com.jonasmp.ai.combat.CombatTactic;
+import com.jonasmp.ai.combat.OpponentMemory;
+import com.jonasmp.ai.combat.OpponentProfile;
+import java.util.UUID;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.configuration.file.FileConfiguration;
@@ -44,6 +48,13 @@ public class BotCombatManager {
    private static final double SWORD_OPTIMAL_MAX = 3.0;
    private static final double AXE_OPTIMAL_MIN = 1.0;
    private static final double AXE_OPTIMAL_MAX = 2.5;
+   private static final int REWARD_WINDOW_TICKS = 20;
+   private final OpponentMemory opponentMemory = new OpponentMemory();
+   private boolean adaptiveEnabled = true;
+   private OpponentProfile activeProfile;
+   private CombatTactic activeTactic;
+   private UUID adaptiveTargetId;
+   private int rewardWindowTicks;
 
    private void debugLog(String msg) {
       CoreBootstrap.PLUGIN.getLogger().info("[BotCombatManager/DEBUG] " + msg);
@@ -70,6 +81,7 @@ public class BotCombatManager {
       this.shieldRaiseDelay = 0;
       this.shieldHoldTarget = 0;
       this.lastAttackSlot = -1;
+      this.endAdaptive();
       this.currentTarget = null;
       this.combatTicks = 0;
       this.noTargetTicks = 0;
@@ -83,6 +95,7 @@ public class BotCombatManager {
       this.jumpCritEnabled = cfg.getBoolean("bot.combat.jump_crit", true);
       this.wTapEnabled = cfg.getBoolean("bot.combat.w_tap", true);
       this.blockHitEnabled = cfg.getBoolean("bot.combat.block_hit", true);
+      this.adaptiveEnabled = cfg.getBoolean("bot.combat.adaptive", true);
    }
 
    public boolean isInCombat() {
@@ -98,8 +111,100 @@ public class BotCombatManager {
    }
 
    public void clearTarget() {
+      this.endAdaptive();
       this.currentTarget = null;
       this.combatTicks = 0;
+   }
+
+   private double effStrafeChance() {
+      return this.activeTactic != null ? this.activeTactic.strafeChance : this.strafeChance;
+   }
+
+   private double effShieldChance() {
+      return this.activeTactic != null ? this.activeTactic.shieldChance : SHIELD_ATTEMPT_CHANCE;
+   }
+
+   private double optimalMin(boolean hasSword) {
+      if (this.activeTactic != null) {
+         return this.activeTactic.rangeMin - (hasSword ? 0.0 : 0.5);
+      }
+      return hasSword ? SWORD_OPTIMAL_MIN : AXE_OPTIMAL_MIN;
+   }
+
+   private double optimalMax(boolean hasSword) {
+      if (this.activeTactic != null) {
+         return this.activeTactic.rangeMax - (hasSword ? 0.0 : 0.5);
+      }
+      return hasSword ? SWORD_OPTIMAL_MAX : AXE_OPTIMAL_MAX;
+   }
+
+   private boolean kiteActive() {
+      return this.activeTactic != null && this.activeTactic.kite;
+   }
+
+   /** Loads/switches the per-opponent profile and picks a tactic when the target changes. */
+   private void updateAdaptiveTarget(Entity target) {
+      if (this.aiBot == null) {
+         return;
+      }
+      if (!this.adaptiveEnabled || !(target instanceof Player)) {
+         if (this.activeProfile != null) {
+            this.endAdaptive();
+         }
+         return;
+      }
+
+      UUID id = target.getUniqueId();
+      if (this.activeProfile != null && id.equals(this.adaptiveTargetId)) {
+         return;
+      }
+
+      this.endAdaptive();
+      this.adaptiveTargetId = id;
+      this.activeProfile = this.opponentMemory.getOrCreate(id, target.getName());
+      this.activeTactic = this.activeProfile.selectTactic();
+      this.rewardWindowTicks = 0;
+      this.aiBot.consumeDamageDealt();
+      this.aiBot.consumeDamageTaken();
+      this.debugLog("ADAPT_BEGIN " + this.activeProfile.summary() + " tactic=" + this.activeTactic);
+   }
+
+   /** Per-tick: closes a reward window, folds the outcome into the profile, re-selects a tactic. */
+   private void tickRewardWindow() {
+      if (this.activeProfile == null || this.aiBot == null) {
+         return;
+      }
+      this.rewardWindowTicks++;
+      if (this.rewardWindowTicks >= REWARD_WINDOW_TICKS) {
+         double dealt = this.aiBot.consumeDamageDealt();
+         double taken = this.aiBot.consumeDamageTaken();
+         double reward = dealt - taken;
+         this.activeProfile.recordReward(this.activeTactic, reward);
+         this.activeProfile.noteWindowStats(dealt, taken);
+         this.rewardWindowTicks = 0;
+         CombatTactic next = this.activeProfile.selectTactic();
+         this.debugLog("ADAPT_REWARD tactic=" + this.activeTactic + " r=" + String.format("%.1f", reward)
+            + " -> " + next + " " + this.activeProfile.summary());
+         this.activeTactic = next;
+      }
+   }
+
+   /** Persists the active profile and clears adaptive state when a fight ends. */
+   private void endAdaptive() {
+      if (this.activeProfile != null) {
+         if (this.aiBot != null && this.rewardWindowTicks > 0) {
+            double dealt = this.aiBot.consumeDamageDealt();
+            double taken = this.aiBot.consumeDamageTaken();
+            double scale = (double) REWARD_WINDOW_TICKS / (double) Math.max(1, this.rewardWindowTicks);
+            this.activeProfile.recordReward(this.activeTactic, (dealt - taken) * scale);
+         }
+         this.opponentMemory.flush(this.adaptiveTargetId);
+         this.debugLog("ADAPT_END " + this.activeProfile.summary());
+      }
+      this.activeProfile = null;
+      this.activeTactic = null;
+      this.adaptiveTargetId = null;
+      this.rewardWindowTicks = 0;
    }
 
    private int getWeaponCooldownTicks(Player bot) {
@@ -140,7 +245,8 @@ public class BotCombatManager {
             if (cooldown < 0.01F) {
                return this.attackCooldown <= 0;
             } else {
-               return cooldown >= 0.95F ? true : (isPlayerTarget || health < 8.0 || isSurrounded) && cooldown >= 0.5F;
+               float threshold = this.activeTactic != null ? (float) this.activeTactic.attackChargeThreshold : 0.5F;
+               return cooldown >= 0.95F ? true : (isPlayerTarget || health < 8.0 || isSurrounded) && cooldown >= threshold;
             }
          } catch (Exception var9) {
             return this.attackCooldown <= 0;
@@ -156,6 +262,7 @@ public class BotCombatManager {
          if (target != null && target.isValid() && !target.isDead()) {
             double dist = bot.getLocation().distance(target.getLocation());
             if (dist > 15.0) {
+               this.endAdaptive();
                this.currentTarget = null;
                this.combatTicks = 0;
                return false;
@@ -167,6 +274,7 @@ public class BotCombatManager {
             } else {
                boolean justEnteredCombat = this.currentTarget == null;
                this.currentTarget = target;
+               this.updateAdaptiveTarget(target);
                this.combatTicks = 30;
                this.noTargetTicks = 0;
                nmsBot.setRotation(this.computeYaw(bot, target), this.computePitch(bot, target));
@@ -209,11 +317,11 @@ public class BotCombatManager {
                   this.shieldBlockCooldown--;
                }
 
-
+               this.tickRewardWindow();
 
                boolean hasSword = this.isHoldingSword(bot);
-               double optimalMin = hasSword ? 1.5 : 1.0;
-               double optimalMax = hasSword ? 3.0 : 2.5;
+               double optimalMin = this.optimalMin(hasSword);
+               double optimalMax = this.optimalMax(hasSword);
                double health = bot.getHealth();
                int recentHits = this.aiBot != null ? this.aiBot.getRecentHitCount(1500L) : 0;
                boolean underBurst = recentHits >= 2;
@@ -273,7 +381,7 @@ public class BotCombatManager {
                      && !attackReady
                      && (underBurst || cautious)
                      && dist <= optimalMax + 1.0
-                     && Math.random() < SHIELD_ATTEMPT_CHANCE) {
+                     && Math.random() < this.effShieldChance()) {
                   this.shieldRaiseDelay = SHIELD_REACTION_MIN + (int)(Math.random() * (double)(SHIELD_REACTION_MAX - SHIELD_REACTION_MIN + 1));
                }
 
@@ -287,7 +395,7 @@ public class BotCombatManager {
                   bot.setSprinting(false);
                } else {
                   forward = 0.6;
-                  if (Math.random() < this.strafeChance) {
+                  if (Math.random() < this.effStrafeChance()) {
                      sideways = (double)this.strafeDir * 0.6;
                      if (this.combatTicks % 3 == 0 && Math.random() < 0.5) {
                         this.strafeDir *= -1;
@@ -322,7 +430,7 @@ public class BotCombatManager {
 
                if (this.wTapEnabled && this.wTapCooldown > 0 && this.wTapCooldown <= 3) {
                   bot.setSprinting(false);
-                  double retreat = this.comboCount >= 3 ? -0.3 : -0.15;
+                  double retreat = this.comboCount >= 3 || this.kiteActive() ? -0.3 : -0.15;
                   nmsBot.walkRelative(retreat, sideways * 0.2);
                   if (this.comboCount >= 3) {
                      this.comboCount = 0;
@@ -336,6 +444,7 @@ public class BotCombatManager {
             if (this.currentTarget != null) {
                this.noTargetTicks++;
                if (this.noTargetTicks >= 40) {
+                  this.endAdaptive();
                   this.currentTarget = null;
                   this.combatTicks = 0;
                   this.comboCount = 0;

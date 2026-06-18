@@ -32,15 +32,23 @@ public final class BotCombatListener implements Listener {
       }
 
       Player bot = this.aiBot.getNMSBot().getPlayer();
-      if (bot == null || !event.getEntity().equals(bot)) {
+      if (bot == null) {
          return;
       }
 
-      this.aiBot.noteIncomingHit();
+      if (event.getEntity().equals(bot)) {
+         this.aiBot.noteIncomingHit();
+         this.aiBot.noteDamageTaken(event.getFinalDamage());
 
-      Player attacker = resolveAttacker(event);
-      if (attacker != null && !attacker.equals(bot)) {
-         this.aiBot.recordPlayerDamage(attacker);
+         Player attacker = resolveAttacker(event);
+         if (attacker != null && !attacker.equals(bot)) {
+            this.aiBot.recordPlayerDamage(attacker);
+         }
+         return;
+      }
+
+      if (bot.equals(event.getDamager()) && !event.getEntity().equals(bot)) {
+         this.aiBot.noteDamageDealt(event.getFinalDamage());
       }
    }
 
