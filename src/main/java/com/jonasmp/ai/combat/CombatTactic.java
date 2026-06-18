@@ -23,7 +23,17 @@ public enum CombatTactic {
    BALANCED(0.80, 1.5, 3.0, 0.55, 0.60, false),
 
    /** Kite & punish: max spacing, high blocking, retreats after each trade. Good vs. aggressive rushers/combo players. */
-   HIT_AND_RUN(0.90, 2.2, 3.6, 0.65, 0.65, true);
+   HIT_AND_RUN(0.90, 2.2, 3.6, 0.65, 0.65, true),
+
+   /**
+    * Offensive mirror: turns the opponent's own successful tempo against them. Its
+    * fields here are only the fallback defaults used until enough combo data exists;
+    * once the combo-learner has a confident profile, {@code BotCombatManager} derives
+    * the live range / attack cadence / shield bias from the opponent's measured rhythm
+    * and distance. Sits in the bandit like any other arm, so it is reward-gated — Kai
+    * only keeps mirroring when it actually out-trades that specific opponent.
+    */
+   MIRROR(0.75, 1.6, 3.0, 0.40, 0.55, false);
 
    /** Probability per eligible tick that the bot strafes sideways. */
    public final double strafeChance;

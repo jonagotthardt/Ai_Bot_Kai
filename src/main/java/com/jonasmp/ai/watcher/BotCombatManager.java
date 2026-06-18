@@ -56,7 +56,14 @@ public class BotCombatManager {
    private static final double PREDICT_MAX_BLOCK_RATE = 0.7;
    private static final double PREDICT_BLOCK_SCALE = 0.8;
    private static final int PREDICT_MAX_DELAY_TICKS = 8;
+   private static final double MIRROR_MIN_CONFIDENCE = 0.5;
+   private static final double MIRROR_FULL_CHARGE_MS = 600.0;
    private boolean comboDefenseEnabled = true;
+   private double mirrorStrafe;
+   private double mirrorRangeMin;
+   private double mirrorRangeMax;
+   private double mirrorShield;
+   private double mirrorCharge;
    private final OpponentMemory opponentMemory = new OpponentMemory();
    private boolean adaptiveEnabled = true;
    private OpponentProfile activeProfile;
@@ -154,15 +161,35 @@ public class BotCombatManager {
       this.combatTicks = 0;
    }
 
+   private boolean isMirror() {
+      return this.activeTactic == CombatTactic.MIRROR;
+   }
+
    private double effStrafeChance() {
+      if (this.isMirror()) {
+         return this.mirrorStrafe;
+      }
       return this.activeTactic != null ? this.activeTactic.strafeChance : this.strafeChance;
    }
 
    private double effShieldChance() {
+      if (this.isMirror()) {
+         return this.mirrorShield;
+      }
       return this.activeTactic != null ? this.activeTactic.shieldChance : SHIELD_ATTEMPT_CHANCE;
    }
 
+   private double effAttackChargeThreshold() {
+      if (this.isMirror()) {
+         return this.mirrorCharge;
+      }
+      return this.activeTactic != null ? this.activeTactic.attackChargeThreshold : 0.5;
+   }
+
    private double optimalMin(boolean hasSword) {
+      if (this.isMirror()) {
+         return this.mirrorRangeMin - (hasSword ? 0.0 : 0.5);
+      }
       if (this.activeTactic != null) {
          return this.activeTactic.rangeMin - (hasSword ? 0.0 : 0.5);
       }
@@ -170,6 +197,9 @@ public class BotCombatManager {
    }
 
    private double optimalMax(boolean hasSword) {
+      if (this.isMirror()) {
+         return this.mirrorRangeMax - (hasSword ? 0.0 : 0.5);
+      }
       if (this.activeTactic != null) {
          return this.activeTactic.rangeMax - (hasSword ? 0.0 : 0.5);
       }
@@ -178,6 +208,41 @@ public class BotCombatManager {
 
    private boolean kiteActive() {
       return this.activeTactic != null && this.activeTactic.kite;
+   }
+
+   /**
+    * Derives the live MIRROR parameters from the current opponent's measured combo:
+    * their attack rhythm -> Kai's swing cadence, their typical distance -> Kai's range,
+    * with shield bias scaling to match their aggression. Falls back to the MIRROR enum
+    * defaults until the combo-learner is confident. Cheap; called per reward window.
+    */
+   private void refreshMirrorParams() {
+      this.mirrorStrafe = CombatTactic.MIRROR.strafeChance;
+      this.mirrorRangeMin = CombatTactic.MIRROR.rangeMin;
+      this.mirrorRangeMax = CombatTactic.MIRROR.rangeMax;
+      this.mirrorShield = CombatTactic.MIRROR.shieldChance;
+      this.mirrorCharge = CombatTactic.MIRROR.attackChargeThreshold;
+      if (this.aiBot == null || this.currentTarget == null) {
+         return;
+      }
+      ComboTracker tracker = this.aiBot.getComboLearner().getActiveTracker(this.currentTarget);
+      if (tracker == null || tracker.confidence() < MIRROR_MIN_CONFIDENCE) {
+         return;
+      }
+      double interval = tracker.avgIntervalMs();
+      if (interval > 0.0) {
+         this.mirrorCharge = clamp(interval / MIRROR_FULL_CHARGE_MS, 0.4, 0.95);
+      }
+      double dist = tracker.avgDistance();
+      if (dist > 0.0) {
+         this.mirrorRangeMin = clamp(dist - 0.4, 1.2, 3.6);
+         this.mirrorRangeMax = clamp(dist + 0.6, this.mirrorRangeMin + 0.6, 4.2);
+      }
+      this.mirrorShield = clamp(this.mirrorCharge * 0.7, 0.2, 0.6);
+   }
+
+   private static double clamp(double v, double lo, double hi) {
+      return v < lo ? lo : (v > hi ? hi : v);
    }
 
    /** Loads/switches the per-opponent profile and picks a tactic when the target changes. */
@@ -204,6 +269,9 @@ public class BotCombatManager {
       this.rewardWindowTicks = 0;
       this.aiBot.consumeDamageDealt();
       this.aiBot.consumeDamageTaken();
+      if (this.isMirror()) {
+         this.refreshMirrorParams();
+      }
       this.debugLog("ADAPT_BEGIN " + this.activeProfile.summary() + " tactic=" + this.activeTactic);
    }
 
@@ -224,6 +292,9 @@ public class BotCombatManager {
          this.debugLog("ADAPT_REWARD tactic=" + this.activeTactic + " r=" + String.format("%.1f", reward)
             + " -> " + next + " " + this.activeProfile.summary());
          this.activeTactic = next;
+         if (this.isMirror()) {
+            this.refreshMirrorParams();
+         }
       }
    }
 
@@ -283,7 +354,7 @@ public class BotCombatManager {
             if (cooldown < 0.01F) {
                return this.attackCooldown <= 0;
             } else {
-               float threshold = this.activeTactic != null ? (float) this.activeTactic.attackChargeThreshold : 0.5F;
+               float threshold = (float) this.effAttackChargeThreshold();
                return cooldown >= 0.95F ? true : (isPlayerTarget || health < 8.0 || isSurrounded) && cooldown >= threshold;
             }
          } catch (Exception var9) {
