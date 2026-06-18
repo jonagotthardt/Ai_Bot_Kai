@@ -111,6 +111,18 @@ public class ChunkCache {
          this.sectionHeight = sectionHeight;
       }
 
+      public int minY() {
+         return this.minY;
+      }
+
+      public int sectionHeight() {
+         return this.sectionHeight;
+      }
+
+      public Material[] rawBlocks() {
+         return this.blocks;
+      }
+
       public Material getBlockType(int localX, int worldY, int localZ) {
          if (localX >= 0 && localX <= 15 && localZ >= 0 && localZ <= 15) {
             int yIndex = worldY - this.minY;

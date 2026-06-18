@@ -13,6 +13,11 @@ import org.bukkit.event.block.BlockPlaceEvent;
 public class DeltaTracker implements Listener {
    private final Map<String, DeltaTracker.DeltaEntry> deltas = new ConcurrentHashMap<>();
    private static final int MAX_ENTRIES = 10000;
+   private PersistentChunkStore persistentStore;
+
+   public void setPersistentStore(PersistentChunkStore persistentStore) {
+      this.persistentStore = persistentStore;
+   }
 
    @EventHandler(
       priority = EventPriority.MONITOR,
@@ -22,6 +27,9 @@ public class DeltaTracker implements Listener {
       Block block = event.getBlock();
       String key = this.makeKey(block);
       this.deltas.put(key, new DeltaTracker.DeltaEntry(Material.AIR, System.currentTimeMillis()));
+      if (this.persistentStore != null) {
+         this.persistentStore.invalidateBlock(block.getWorld().getName(), block.getX(), block.getY(), block.getZ(), Material.AIR);
+      }
       this.evictIfNeeded();
    }
 
@@ -33,6 +41,9 @@ public class DeltaTracker implements Listener {
       Block block = event.getBlock();
       String key = this.makeKey(block);
       this.deltas.put(key, new DeltaTracker.DeltaEntry(block.getType(), System.currentTimeMillis()));
+      if (this.persistentStore != null) {
+         this.persistentStore.invalidateBlock(block.getWorld().getName(), block.getX(), block.getY(), block.getZ(), block.getType());
+      }
       this.evictIfNeeded();
    }
 

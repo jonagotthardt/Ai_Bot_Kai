@@ -18,13 +18,16 @@ public class ChunkRadar {
    private final ChunkCache cache;
    private final ChunkFileReader fileReader;
    private final DeltaTracker deltaTracker;
+   private final PersistentChunkStore persistentStore;
    private Player trackedBot = null;
    private int refreshTaskId = -1;
 
    public ChunkRadar() {
       this.cache = new ChunkCache();
       this.fileReader = new ChunkFileReader();
+      this.persistentStore = new PersistentChunkStore();
       this.deltaTracker = new DeltaTracker();
+      this.deltaTracker.setPersistentStore(this.persistentStore);
    }
 
    public void startRefreshTask(Player bot) {
@@ -55,7 +58,12 @@ public class ChunkRadar {
          this.refreshTaskId = -1;
       }
 
+      this.persistentStore.flushAll();
       this.trackedBot = null;
+   }
+
+   public PersistentChunkStore getPersistentStore() {
+      return this.persistentStore;
    }
 
    public Material getBlockType(int worldX, int worldY, int worldZ, String worldName) {
@@ -66,10 +74,15 @@ public class ChunkRadar {
          Material cached = this.cache.getBlockType(worldX, worldY, worldZ);
          if (cached != null) {
             return cached;
-         } else {
-            World world = Bukkit.getWorld(worldName);
-            return world != null ? world.getBlockAt(worldX, worldY, worldZ).getType() : Material.AIR;
          }
+
+         Material persisted = this.persistentStore.getMaterial(worldName, worldX, worldY, worldZ);
+         if (persisted != null) {
+            return persisted;
+         }
+
+         World world = Bukkit.getWorld(worldName);
+         return world != null ? world.getBlockAt(worldX, worldY, worldZ).getType() : Material.AIR;
       }
    }
 
@@ -104,6 +117,13 @@ public class ChunkRadar {
                            }
                         }
                      }
+                  }
+               }
+            } else {
+               for (int[] pos : this.persistentStore.getPositions(world.getName(), chunkX, chunkZ, target)) {
+                  if (Math.abs(pos[0] - cx) <= radiusBlocks && Math.abs(pos[2] - cz) <= radiusBlocks
+                     && this.deltaTracker.getLiveMaterial(pos[0], pos[1], pos[2], world.getName()) == null) {
+                     results.add(new Location(world, (double)pos[0], (double)pos[1], (double)pos[2]));
                   }
                }
             }
@@ -183,9 +203,11 @@ public class ChunkRadar {
                   ChunkCache.CachedChunk chunk = this.fileReader.readChunk(world, chunkX, chunkZ);
                   if (chunk != null) {
                      this.cache.put(chunkX, chunkZ, chunk);
+                     this.persistentStore.recordChunk(world, chunkX, chunkZ, chunk);
                   }
 
                   this.cache.purgeExpired();
+                  this.persistentStore.flushBudget(1);
                   return;
                }
             }
