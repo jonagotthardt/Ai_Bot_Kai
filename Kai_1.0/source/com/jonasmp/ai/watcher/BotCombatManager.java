@@ -28,18 +28,18 @@ public class BotCombatManager {
    private int comboCount = 0;
    private boolean wasInCombat = false;
    private int noTargetTicks = 0;
+   private boolean isMaceSmashing = false;
+   private int windChargeCooldown = 0;
+   private int maceSmashTicks = 0;
+   private double smashStartY = 0.0;
+   private static final int WIND_CHARGE_COOLDOWN = 60;
+   private static final double MACE_SMASH_RANGE = 4.0;
+   private static final double MACE_SMASH_MIN_FALL = 1.5;
    private int shieldBlockCooldown = 0;
    private int shieldBlockTicks = 0;
    private boolean isShieldBlocking = false;
-   private int shieldRaiseDelay = 0;
-   private int shieldHoldTarget = 0;
-   private static final double FLEE_HEALTH = 6.0;
-   private static final double SHIELD_ATTEMPT_CHANCE = 0.55;
-   private static final int SHIELD_REACTION_MIN = 2;
-   private static final int SHIELD_REACTION_MAX = 4;
-   private static final int SHIELD_HOLD_MIN = 6;
-   private static final int SHIELD_HOLD_MAX = 12;
-   private static final int SHIELD_COOLDOWN = 16;
+   private static final int SHIELD_BLOCK_DURATION = 8;
+   private static final int SHIELD_BLOCK_COOLDOWN = 20;
    private static final double SWORD_OPTIMAL_MIN = 1.5;
    private static final double SWORD_OPTIMAL_MAX = 3.0;
    private static final double AXE_OPTIMAL_MIN = 1.0;
@@ -62,13 +62,15 @@ public class BotCombatManager {
    }
 
    public void reset() {
+      this.isMaceSmashing = false;
+      this.maceSmashTicks = 0;
+      this.smashStartY = 0.0;
       this.attackCooldown = 0;
       this.comboCount = 0;
       this.shieldBlockCooldown = 0;
       this.isShieldBlocking = false;
       this.shieldBlockTicks = 0;
-      this.shieldRaiseDelay = 0;
-      this.shieldHoldTarget = 0;
+      this.windChargeCooldown = 0;
       this.lastAttackSlot = -1;
       this.currentTarget = null;
       this.combatTicks = 0;
@@ -172,7 +174,15 @@ public class BotCombatManager {
                nmsBot.setRotation(this.computeYaw(bot, target), this.computePitch(bot, target));
                if (justEnteredCombat) {
                   this.debugLog("COMBAT_START target=" + target.getName() + " dist=" + String.format("%.1f", dist));
-                  this.selectBestWeapon(bot, nmsBot);
+                  int maceSlot = this.findMaceSlot(bot);
+                  if (maceSlot >= 0) {
+                     nmsBot.selectHotbarSlot(maceSlot);
+                     this.lastAttackSlot = maceSlot;
+                     this.debugLog("MACE_EQUIPPED slot=" + maceSlot + " on_combat_start");
+                  } else {
+                     this.selectBestWeapon(bot, nmsBot);
+                     this.debugLog("NO_MACE_FOUND best_weapon_selected");
+                  }
 
                   this.wasInCombat = true;
                   if (this.aiBot != null) {
@@ -180,13 +190,15 @@ public class BotCombatManager {
                   }
                }
 
-               if (this.combatTicks % 2 == 0) {
+               if (!this.isMaceSmashing && this.combatTicks % 2 == 0) {
                   ItemStack hand = bot.getInventory().getItemInMainHand();
                   if (hand == null || hand.getType().isEdible() || this.weaponScore(hand.getType()) < 0) {
                      this.debugLog("WEAPON_SWITCH from=" + (hand != null ? hand.getType().name() : "EMPTY") + " reason=bad_weapon_in_hand");
                      this.lastAttackSlot = -1;
                      this.selectBestWeapon(bot, nmsBot);
                   }
+               } else if (this.isMaceSmashing && this.combatTicks % 2 == 0) {
+                  this.debugLog("WEAPON_SWITCH_SKIPPED reason=mace_smash_in_progress");
                }
 
                if (this.attackCooldown > 0) {
@@ -205,132 +217,200 @@ public class BotCombatManager {
                   this.blockHitCooldown--;
                }
 
+               if (this.windChargeCooldown > 0) {
+                  this.windChargeCooldown--;
+               }
+
                if (this.shieldBlockCooldown > 0) {
                   this.shieldBlockCooldown--;
                }
 
-
-
-               boolean hasSword = this.isHoldingSword(bot);
-               double optimalMin = hasSword ? 1.5 : 1.0;
-               double optimalMax = hasSword ? 3.0 : 2.5;
-               double health = bot.getHealth();
-               int recentHits = this.aiBot != null ? this.aiBot.getRecentHitCount(1500L) : 0;
-               boolean underBurst = recentHits >= 2;
-               boolean cautious = health < 11.0;
-               boolean fleeing = health <= FLEE_HEALTH;
-               boolean hasShield = this.hasShieldInOffhand(bot);
-               boolean attackReady = this.isAttackReady(bot, target) && dist <= optimalMax + 0.3;
                if (this.isShieldBlocking) {
                   this.shieldBlockTicks++;
+                  if (this.shieldBlockTicks >= 8) {
+                     this.isShieldBlocking = false;
+                     this.shieldBlockTicks = 0;
+                     this.shieldBlockCooldown = 20;
+                     this.debugLog("SHIELD_BLOCK_END");
+                  }
                }
 
-               if (fleeing) {
-                  if (this.isShieldBlocking && (attackReady || !hasShield)) {
-                     this.releaseShield(nmsBot);
-                  } else if (!this.isShieldBlocking && hasShield && this.shieldBlockCooldown <= 0) {
-                     this.raiseShield(nmsBot);
+               if (!this.isMaceSmashing && this.windChargeCooldown <= 0) {
+                  int windChargeSlot = this.findWindChargeSlot(bot);
+                  int maceSlotx = this.findMaceSlot(bot);
+                  if (windChargeSlot >= 0 && maceSlotx >= 0 && dist > 3.0 && dist < 12.0) {
+                     this.debugLog(
+                        "MACE_SMASH_START target="
+                           + target.getName()
+                           + " windChargeSlot="
+                           + windChargeSlot
+                           + " maceSlot="
+                           + maceSlotx
+                           + " dist="
+                           + String.format("%.1f", dist)
+                     );
+                     nmsBot.selectHotbarSlot(windChargeSlot);
+                     float currentYaw = bot.getLocation().getYaw();
+                     nmsBot.setRotation(currentYaw, 90.0F);
+                     nmsBot.useItem();
+                     this.debugLog("WIND_CHARGE_THROWN slot=" + windChargeSlot + " yaw=" + String.format("%.1f", currentYaw) + " pitch=90.0");
+                     nmsBot.setRotation(this.computeYaw(bot, target), this.computePitch(bot, target));
+                     this.windChargeCooldown = 60;
+                     this.isMaceSmashing = true;
+                     this.maceSmashTicks = 0;
+                     this.smashStartY = bot.getLocation().getY();
+                     return true;
+                  }
+               }
+
+               if (this.isMaceSmashing) {
+                  this.maceSmashTicks++;
+                  int maceSlotx = this.findMaceSlot(bot);
+                  if (maceSlotx >= 0) {
+                     nmsBot.selectHotbarSlot(maceSlotx);
                   }
 
-                  double awaySide = (double)this.strafeDir * 0.5;
-                  if (this.combatTicks % 6 == 0) {
-                     this.strafeDir *= -1;
+                  nmsBot.setRotation(this.computeYaw(bot, target), this.computePitch(bot, target));
+                  double currentY = bot.getLocation().getY();
+                  double fallen = this.smashStartY - currentY;
+                  boolean hasFallenEnough = fallen >= 1.5;
+                  boolean notOnGround = !bot.isOnGround();
+                  boolean inSmashRange = dist <= 4.0;
+                  boolean peakReached = this.maceSmashTicks > 6;
+                  this.debugLog(
+                     "MACE_SMASH_TRACK ticks="
+                        + this.maceSmashTicks
+                        + " fallen="
+                        + String.format("%.2f", fallen)
+                        + " onGround="
+                        + bot.isOnGround()
+                        + " dist="
+                        + String.format("%.1f", dist)
+                  );
+                  if (peakReached && hasFallenEnough && notOnGround && inSmashRange && this.attackCooldown <= 0) {
+                     this.debugLog(
+                        "MACE_SMASH_HIT target="
+                           + target.getName()
+                           + " dist="
+                           + String.format("%.1f", dist)
+                           + " fallen="
+                           + String.format("%.2f", fallen)
+                           + " ticks="
+                           + this.maceSmashTicks
+                     );
+                     nmsBot.swingMainHand();
+                     bot.attack(target);
+                     this.comboCount++;
+                     this.attackCooldown = 15;
+                     this.isMaceSmashing = false;
+                     this.smashStartY = 0.0;
+                     return true;
+                  } else {
+                     if (this.maceSmashTicks > 60) {
+                        this.debugLog(
+                           "MACE_SMASH_TIMEOUT target=" + target.getName() + " ticks=" + this.maceSmashTicks + " fallen=" + String.format("%.2f", fallen)
+                        );
+                        this.isMaceSmashing = false;
+                        this.smashStartY = 0.0;
+                     }
+
+                     return true;
+                  }
+               } else {
+                  boolean hasSword = this.isHoldingSword(bot);
+                  double optimalMin = hasSword ? 1.5 : 1.0;
+                  double optimalMax = hasSword ? 3.0 : 2.5;
+                  double sideways = 0.0;
+                  double forward;
+                  if (dist > optimalMax) {
+                     forward = 0.6;
+                     bot.setSprinting(true);
+                  } else if (dist < optimalMin) {
+                     forward = -0.4;
+                     bot.setSprinting(false);
+                     if (this.hasShieldInOffhand(bot) && this.shieldBlockCooldown <= 0 && !this.isShieldBlocking) {
+                        this.isShieldBlocking = true;
+                        this.shieldBlockTicks = 0;
+                        nmsBot.useOffhandItem();
+                        this.debugLog("SHIELD_BLOCK_START target=" + target.getName() + " dist=" + String.format("%.1f", dist));
+                     }
+                  } else {
+                     forward = 0.6;
+                     if (Math.random() < this.strafeChance) {
+                        sideways = (double)this.strafeDir * 0.6;
+                        if (this.combatTicks % 3 == 0 && Math.random() < 0.5) {
+                           this.strafeDir *= -1;
+                        }
+                     }
+
+                     bot.setSprinting(true);
                   }
 
-                  bot.setSprinting(dist < 6.0 && !this.isShieldBlocking);
-                  nmsBot.walkRelative(-0.6, awaySide);
-                  if (attackReady && dist <= optimalMin + 0.5) {
-                     this.performAttack(bot, nmsBot, target, dist, 0.0);
+                  if (this.isShieldBlocking) {
+                     nmsBot.useOffhandItem();
+                  }
+
+                  nmsBot.walkRelative(forward, sideways);
+                  if (this.jumpCritEnabled && bot.isOnGround() && this.jumpCooldown <= 0 && this.attackCooldown <= 2 && dist <= optimalMax) {
+                     nmsBot.jump();
+                     this.jumpCooldown = 12;
+                  }
+
+                  if (this.isAttackReady(bot, target) && dist <= optimalMax + 0.3) {
+                     if (this.isShieldBlocking) {
+                        this.isShieldBlocking = false;
+                        this.shieldBlockTicks = 0;
+                        this.shieldBlockCooldown = 20;
+                        this.debugLog("SHIELD_BLOCK_RELEASE_FOR_ATTACK");
+                     }
+
+                     ItemStack weapon = bot.getInventory().getItemInMainHand();
+                     this.debugLog(
+                        "ATTACK target="
+                           + target.getName()
+                           + " dist="
+                           + String.format("%.1f", dist)
+                           + " weapon="
+                           + (weapon != null ? weapon.getType().name() : "FIST")
+                           + " cooldown="
+                           + this.attackCooldown
+                     );
+                     nmsBot.swingMainHand();
+                     bot.attack(target);
+                     this.comboCount++;
+                     this.attackCooldown = this.getWeaponCooldownTicks(bot);
+                     this.wTapCooldown = 6;
+                     this.blockHitCooldown = 3;
+                     nmsBot.walkRelative(0.4, sideways * 0.3);
+                  } else if (dist <= optimalMax + 0.3) {
+                     this.debugLog(
+                        "ATTACK_BLOCKED target="
+                           + target.getName()
+                           + " dist="
+                           + String.format("%.1f", dist)
+                           + " cooldown="
+                           + this.attackCooldown
+                           + " isReady="
+                           + this.isAttackReady(bot, target)
+                     );
+                  }
+
+                  if (dist > optimalMax + 1.0) {
+                     this.comboCount = 0;
+                  }
+
+                  if (this.wTapEnabled && this.wTapCooldown > 0 && this.wTapCooldown <= 3) {
+                     bot.setSprinting(false);
+                     double retreat = this.comboCount >= 3 ? -0.3 : -0.15;
+                     nmsBot.walkRelative(retreat, sideways * 0.2);
+                     if (this.comboCount >= 3) {
+                        this.comboCount = 0;
+                     }
                   }
 
                   this.combatTicks++;
                   return true;
                }
-
-               if (this.isShieldBlocking) {
-                  boolean stopBlock = attackReady
-                     || this.shieldBlockTicks >= this.shieldHoldTarget
-                     || dist > optimalMax + 1.5
-                     || !underBurst && !cautious;
-                  if (stopBlock) {
-                     this.releaseShield(nmsBot);
-                  } else {
-                     nmsBot.walkRelative(dist < optimalMin ? -0.3 : 0.0, (double)this.strafeDir * 0.3);
-                     if (this.combatTicks % 5 == 0) {
-                        this.strafeDir *= -1;
-                     }
-
-                     this.combatTicks++;
-                     return true;
-                  }
-               } else if (this.shieldRaiseDelay > 0) {
-                  this.shieldRaiseDelay--;
-                  if (this.shieldRaiseDelay <= 0 && hasShield && this.shieldBlockCooldown <= 0 && !attackReady) {
-                     this.raiseShield(nmsBot);
-                  }
-               } else if (hasShield
-                     && this.shieldBlockCooldown <= 0
-                     && !attackReady
-                     && (underBurst || cautious)
-                     && dist <= optimalMax + 1.0
-                     && Math.random() < SHIELD_ATTEMPT_CHANCE) {
-                  this.shieldRaiseDelay = SHIELD_REACTION_MIN + (int)(Math.random() * (double)(SHIELD_REACTION_MAX - SHIELD_REACTION_MIN + 1));
-               }
-
-               double sideways = 0.0;
-               double forward;
-               if (dist > optimalMax) {
-                  forward = 0.6;
-                  bot.setSprinting(true);
-               } else if (dist < optimalMin) {
-                  forward = -0.4;
-                  bot.setSprinting(false);
-               } else {
-                  forward = 0.6;
-                  if (Math.random() < this.strafeChance) {
-                     sideways = (double)this.strafeDir * 0.6;
-                     if (this.combatTicks % 3 == 0 && Math.random() < 0.5) {
-                        this.strafeDir *= -1;
-                     }
-                  }
-
-                  bot.setSprinting(true);
-               }
-
-               if (underBurst && !attackReady) {
-                  forward = Math.min(forward, -0.3);
-                  bot.setSprinting(false);
-               }
-
-               nmsBot.walkRelative(forward, sideways);
-               if (this.jumpCritEnabled && bot.isOnGround() && this.jumpCooldown <= 0 && this.attackCooldown <= 2 && dist <= optimalMax) {
-                  nmsBot.jump();
-                  this.jumpCooldown = 12;
-               }
-
-               if (attackReady) {
-                  if (this.isShieldBlocking) {
-                     this.releaseShield(nmsBot);
-                  }
-
-                  this.performAttack(bot, nmsBot, target, dist, sideways);
-               }
-
-               if (dist > optimalMax + 1.0) {
-                  this.comboCount = 0;
-               }
-
-               if (this.wTapEnabled && this.wTapCooldown > 0 && this.wTapCooldown <= 3) {
-                  bot.setSprinting(false);
-                  double retreat = this.comboCount >= 3 ? -0.3 : -0.15;
-                  nmsBot.walkRelative(retreat, sideways * 0.2);
-                  if (this.comboCount >= 3) {
-                     this.comboCount = 0;
-                  }
-               }
-
-               this.combatTicks++;
-               return true;
             }
          } else {
             if (this.currentTarget != null) {
@@ -347,46 +427,6 @@ public class BotCombatManager {
             return false;
          }
       }
-   }
-
-   private void raiseShield(NMSBot nmsBot) {
-      this.isShieldBlocking = true;
-      this.shieldBlockTicks = 0;
-      this.shieldRaiseDelay = 0;
-      this.shieldHoldTarget = SHIELD_HOLD_MIN + (int)(Math.random() * (double)(SHIELD_HOLD_MAX - SHIELD_HOLD_MIN + 1));
-      nmsBot.startBlocking();
-      this.debugLog("SHIELD_RAISE hold=" + this.shieldHoldTarget);
-   }
-
-   private void releaseShield(NMSBot nmsBot) {
-      if (this.isShieldBlocking) {
-         this.isShieldBlocking = false;
-         this.shieldBlockTicks = 0;
-         this.shieldBlockCooldown = SHIELD_COOLDOWN;
-         nmsBot.stopBlocking();
-         this.debugLog("SHIELD_RELEASE");
-      }
-   }
-
-   private void performAttack(Player bot, NMSBot nmsBot, Entity target, double dist, double sideways) {
-      ItemStack weapon = bot.getInventory().getItemInMainHand();
-      this.debugLog(
-         "ATTACK target="
-            + target.getName()
-            + " dist="
-            + String.format("%.1f", dist)
-            + " weapon="
-            + (weapon != null ? weapon.getType().name() : "FIST")
-            + " cooldown="
-            + this.attackCooldown
-      );
-      nmsBot.swingMainHand();
-      bot.attack(target);
-      this.comboCount++;
-      this.attackCooldown = this.getWeaponCooldownTicks(bot);
-      this.wTapCooldown = 6;
-      this.blockHitCooldown = 3;
-      nmsBot.walkRelative(0.4, sideways * 0.3);
    }
 
    private Entity findPriorityTarget(Player bot) {
@@ -446,9 +486,40 @@ public class BotCombatManager {
       return hand != null && hand.getType().name().contains("SWORD");
    }
 
+   private boolean isHoldingMace(Player bot) {
+      ItemStack hand = bot.getInventory().getItemInMainHand();
+      return hand != null && hand.getType().name().equals("MACE");
+   }
+
+   private int findWindChargeSlot(Player bot) {
+      PlayerInventory inv = bot.getInventory();
+
+      for (int i = 0; i < 9; i++) {
+         ItemStack item = inv.getItem(i);
+         if (item != null && item.getType().name().equals("WIND_CHARGE")) {
+            return i;
+         }
+      }
+
+      return -1;
+   }
+
    private boolean hasShieldInOffhand(Player bot) {
       ItemStack off = bot.getInventory().getItemInOffHand();
       return off != null && off.getType().name().contains("SHIELD");
+   }
+
+   private int findMaceSlot(Player bot) {
+      PlayerInventory inv = bot.getInventory();
+
+      for (int i = 0; i < 9; i++) {
+         ItemStack item = inv.getItem(i);
+         if (item != null && item.getType().name().equals("MACE")) {
+            return i;
+         }
+      }
+
+      return -1;
    }
 
    private void selectBestWeapon(Player bot, NMSBot nmsBot) {
@@ -477,7 +548,7 @@ public class BotCombatManager {
       if (type != null && type.isEdible()) {
          return -1;
       } else if (type != null && type.name().equals("MACE")) {
-         return 22;
+         return 110;
       } else if (type == Material.NETHERITE_SWORD) {
          return 100;
       } else if (type == Material.DIAMOND_SWORD) {

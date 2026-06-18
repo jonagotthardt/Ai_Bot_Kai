@@ -36,6 +36,8 @@ public final class BotCombatListener implements Listener {
          return;
       }
 
+      this.aiBot.noteIncomingHit();
+
       Player attacker = resolveAttacker(event);
       if (attacker != null && !attacker.equals(bot)) {
          this.aiBot.recordPlayerDamage(attacker);

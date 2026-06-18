@@ -1,0 +1,127 @@
+name: JonaSMP_AI_v1_Fixed
+version: 1.0.0
+main: com.jonasmp.ai.JonaSMP_AI
+api-version: '1.21'
+description: V1 Bot mit Performance-Fixes (Tick-Throttling, Async-Pathfinding)
+author: JonaSMP
+depend: [FakePlayerPlugin]
+softdepend: [DynamicShop, Vault]
+
+commands:
+  ai:
+    description: JonaSMP AI Hauptbefehl
+    usage: /ai <mute|unmute|status|stats|train|reload|rules|debug|lang|falsepositive|frage|ask|chat>
+    aliases: [aibot]
+    permission: jonasmpai.use
+    permission-message: "§cDu hast keine Berechtigung für diesen Befehl."
+  f:
+    description: Direkte AI-Chat-Anfrage
+    usage: /f <deine Frage>
+    permission: jonasmpai.chat.query
+    permission-message: "§cDu hast keine Berechtigung für den AI-Chat."
+  watcher:
+    description: Bot-Watcher Steuerung
+    usage: /watcher <spawn|despawn|status|reload|observe|investigate|visible|invisible|freeze|unfreeze|idle|lore|tp|patrol>
+    permission: jonasmpai.watcher.use
+    permission-message: "§cDu hast keine Berechtigung für den Watcher."
+  shopbuy:
+    description: Kaufe Items über DynamicShop
+    usage: /shopbuy <item> [menge]
+    permission: jonasmpai.shop.buy
+    permission-message: "§cDu hast keine Berechtigung für den Shop."
+  shopsell:
+    description: Verkaufe Items über DynamicShop
+    usage: /shopsell <item> [menge|all]
+    permission: jonasmpai.shop.sell
+    permission-message: "§cDu hast keine Berechtigung für den Shop."
+  shopprice:
+    description: Zeige Shop-Preis für ein Item
+    usage: /shopprice <item>
+    permission: jonasmpai.shop.price
+    permission-message: "§cDu hast keine Berechtigung für den Shop."
+  shoplist:
+    description: Liste alle Shop-Items
+    usage: /shoplist [seite]
+    permission: jonasmpai.shop.list
+    permission-message: "§cDu hast keine Berechtigung für den Shop."
+  shopsearch:
+    description: Suche nach Shop-Items
+    usage: /shopsearch <begriff>
+    permission: jonasmpai.shop.search
+    permission-message: "§cDu hast keine Berechtigung für den Shop."
+
+permissions:
+  jonasmpai.use:
+    description: Erlaubt die Nutzung des /ai Befehls
+    default: true
+  jonasmpai.chat.query:
+    description: Erlaubt AI-Chat-Anfragen via /f oder /ai frage
+    default: true
+  jonasmpai.falsepositive:
+    description: Erlaubt das Melden von False-Positives
+    default: true
+  jonasmpai.stats.basic:
+    description: Basis-Server-Statistiken anzeigen
+    default: true
+  jonasmpai.stats.advanced:
+    description: Erweiterte Server-Statistiken anzeigen
+    default: op
+  jonasmpai.admin.status:
+    description: Mute-Status und Moderationsübersicht
+    default: op
+  jonasmpai.admin.moderate:
+    description: Spieler muten/unmuten/unban
+    default: op
+  jonasmpai.admin.stats:
+    description: AI-System-Statistiken anzeigen
+    default: op
+  jonasmpai.admin.train:
+    description: AI-Modell neu trainieren
+    default: op
+  jonasmpai.admin.reload:
+    description: Plugin-Konfiguration neu laden
+    default: op
+  jonasmpai.admin.debug:
+    description: Debug-Informationen anzeigen
+    default: op
+  jonasmpai.admin.playerinfo:
+    description: Spieler-Informationen anzeigen
+    default: op
+  jonasmpai.admin:
+    description: Alle Admin-Funktionen
+    default: op
+    children:
+      jonasmpai.admin.status: true
+      jonasmpai.admin.moderate: true
+      jonasmpai.admin.stats: true
+      jonasmpai.admin.train: true
+      jonasmpai.admin.reload: true
+      jonasmpai.admin.debug: true
+      jonasmpai.admin.playerinfo: true
+  jonasmpai.watcher.use:
+    description: Bot-Watcher Befehle nutzen
+    default: op
+  jonasmpai.shop.buy:
+    description: Items im Shop kaufen
+    default: true
+  jonasmpai.shop.sell:
+    description: Items im Shop verkaufen
+    default: true
+  jonasmpai.shop.price:
+    description: Shop-Preise anzeigen
+    default: true
+  jonasmpai.shop.list:
+    description: Shop-Item-Liste anzeigen
+    default: true
+  jonasmpai.shop.search:
+    description: Nach Shop-Items suchen
+    default: true
+  jonasmpai.shop.admin:
+    description: Alle Shop-Befehle
+    default: op
+    children:
+      jonasmpai.shop.buy: true
+      jonasmpai.shop.sell: true
+      jonasmpai.shop.price: true
+      jonasmpai.shop.list: true
+      jonasmpai.shop.search: true

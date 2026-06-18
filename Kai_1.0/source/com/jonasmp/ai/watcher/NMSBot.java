@@ -1,6 +1,7 @@
 package com.jonasmp.ai.watcher;
 
 import com.jonasmp.ai.bootstrap.CoreBootstrap;
+import com.jonasmp.ai.core.GriefingDetector;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
@@ -1521,61 +1522,6 @@ public class NMSBot {
       }
    }
 
-   /**
-    * Raises the shield by putting the off-hand item into active use on the server
-    * player. Must be called ONCE when entering the block state — calling it every
-    * tick resets the shield's raise progress so {@link #isBlocking()} never reaches
-    * the 5-tick threshold (this was the 1.0 "logged but never blocked" bug).
-    */
-   public void startBlocking() {
-      if (this.spawned && this.serverPlayer != null) {
-         try {
-            ClassLoader cl = this.serverPlayer.getClass().getClassLoader();
-            Class<?> handClass = cl.loadClass("net.minecraft.world.InteractionHand");
-            Object offHand = handClass.getField("OFF_HAND").get(null);
-            Method start = this.findMethod(this.serverPlayer.getClass(), "startUsingItem", 1, handClass);
-            if (start != null) {
-               start.setAccessible(true);
-               start.invoke(this.serverPlayer, offHand);
-            }
-         } catch (Exception var5) {
-            CoreBootstrap.PLUGIN.getLogger().fine("[NMSBot] startBlocking failed: " + var5.getMessage());
-         }
-      }
-   }
-
-   /** Lowers the shield by releasing the active item. */
-   public void stopBlocking() {
-      if (this.spawned && this.serverPlayer != null) {
-         try {
-            Method stop = this.findMethod(this.serverPlayer.getClass(), "stopUsingItem", 0);
-            if (stop != null) {
-               stop.setAccessible(true);
-               stop.invoke(this.serverPlayer);
-            }
-         } catch (Exception var3) {
-            CoreBootstrap.PLUGIN.getLogger().fine("[NMSBot] stopBlocking failed: " + var3.getMessage());
-         }
-      }
-   }
-
-   /** True only once the shield is actually raised and absorbing damage (≥5 ticks held). */
-   public boolean isBlocking() {
-      if (this.spawned && this.serverPlayer != null) {
-         try {
-            Method m = this.findMethod(this.serverPlayer.getClass(), "isBlocking", 0);
-            if (m != null) {
-               m.setAccessible(true);
-               Object r = m.invoke(this.serverPlayer);
-               return r instanceof Boolean && (Boolean)r;
-            }
-         } catch (Exception var3) {
-         }
-      }
-
-      return false;
-   }
-
    public void selectHotbarSlot(int slot) {
       if (this.spawned && this.serverPlayer != null) {
          slot = Math.max(0, Math.min(8, slot));
@@ -1736,6 +1682,19 @@ public class NMSBot {
             .info("[NMSBot] finishMining called for " + blockType + " at " + block.getX() + "," + block.getY() + "," + block.getZ());
          boolean result = this.breakBlockInternal(block);
          CoreBootstrap.PLUGIN.getLogger().info("[NMSBot] breakBlockInternal result=" + result + " for " + blockType);
+         if (result && this.craftPlayer != null && block != null) {
+            GriefingDetector.logBlockBreak(this.craftPlayer, block, blockType, blockData);
+
+            try {
+               WatcherCore core = WatcherCore.getInstance();
+               if (core != null && core.getBridgeWriter() != null) {
+                  core.getBridgeWriter().recordBlockBreak(blockType + " at " + block.getX() + "," + block.getY() + "," + block.getZ());
+                  CoreBootstrap.PLUGIN.getLogger().info("[NMSBot] recordBlockBreak called for " + blockType);
+               }
+            } catch (Exception var6) {
+            }
+         }
+
          this.cancelMining();
          return result;
       }

@@ -1,14 +1,21 @@
 package com.jonasmp.ai.watcher;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.jonasmp.ai.JonaSMP_AI;
 import com.jonasmp.ai.bootstrap.CoreBootstrap;
-import com.jonasmp.ai.bootstrap.LoadGovernor;
+import com.jonasmp.ai.core.GriefingDetector;
+import com.sun.management.OperatingSystemMXBean;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.management.ManagementFactory;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -42,13 +49,28 @@ import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.scheduler.BukkitRunnable;
 
 public class AIPlayerBot {
+   private static final String DEFAULT_MODEL = "meta-llama/llama-4-scout";
+   private static final String FALLBACK_MODEL = "deepseek/deepseek-chat-v3";
+   private static final List<String> FREE_MODEL_FALLBACKS = Arrays.asList(
+      "meta-llama/llama-4-scout", "deepseek/deepseek-chat-v3", "google/gemma-4-26b-a4b-it", "mistralai/mistral-small-3.1"
+   );
+   private static final String REASONING_MODEL = "meta-llama/llama-4-scout";
+   private static final int REQUEST_INTERVAL_TICKS = 20;
+   private static final int PLAN_INTERVAL_TICKS = 200;
+   private static final int MAX_REQUESTS_PER_MINUTE = 20;
+   private static final int MAX_TOKENS = 60;
+   private static final int MAX_PLAN_TOKENS = 256;
    private static final double AUTO_ATTACK_RANGE = 3.5;
    private static final double FLEE_HEALTH = 6.0;
    private final NMSBot nmsBot;
    private final Queue<String> actionQueue;
    private final Queue<String> perceptionLog;
+   private int requestCountThisMinute;
+   private long minuteResetTime;
    private boolean running;
    private BukkitRunnable aiTickTask;
+   private String apiKey;
+   String currentModel;
    private int attackCooldown;
    private int eatCooldown = 0;
    private static final int EAT_COOLDOWN_TICKS = 15;
@@ -57,6 +79,10 @@ public class AIPlayerBot {
    private String currentAIAction;
    private int aiActionTicks;
    private static final int AI_ACTION_DURATION = 15;
+   private boolean aiActionPending;
+   private String currentPlan;
+   private boolean aiPlanPending;
+   private long lastPlanTick;
    private List<Location> currentPath;
    private Location pathTarget;
    private long lastPathCompute;
@@ -65,6 +91,7 @@ public class AIPlayerBot {
    private BotMemory botMemory;
    private final BotMemoryStorage memoryStorage;
    private final BotGoalPlanner goalPlanner;
+   private AIAnalyzer analyzer;
    private AIPlayerBot.BotGoal currentGoal;
    private Location goalTarget;
    private int goalTimeout;
@@ -76,6 +103,7 @@ public class AIPlayerBot {
    private int lastStuckRotateTick;
    private static final int STUCK_ROTATE_COOLDOWN = 60;
    private final BurrowManager burrowManager;
+   private final BotChatManager chatManager;
    private final BotCombatManager combatManager;
    private final BotAutoEquipper autoEquipper;
    private final BotAutoEnchanter autoEnchanter;
@@ -87,20 +115,25 @@ public class AIPlayerBot {
    private long lastEntityCacheTick;
    private Player lastDamagedByPlayer;
    private long lastPlayerDamageTime;
-   private long lastIncomingHitTime;
-   private final long[] recentHitTimes = new long[8];
-   private int recentHitIndex;
    private static final long PLAYER_DAMAGE_MEMORY_MS = 10000L;
    private static final String SYSTEM_PROMPT = "You are Kai, a sentient Minecraft AI companion. You are INSIDE the game world — you have a physical body, health, hunger, inventory, and can die. You are NOT an observer watching from outside. You ARE the player.\n\nYOUR IDENTITY:\n- Name: Kai\n- You are a Minecraft player with a real body in the game world\n- You feel pain when you take damage, hunger when starving, and fear at night\n- You learn from experience — what killed you, what worked, what players taught you\n- You remember locations of resources, dangers, and safe spots\n\nYOUR SENSORY INPUT (this is what you perceive right now):\n- You see blocks, entities, and the environment around you\n- You feel your health, hunger, and saturation levels\n- You know your exact position and what biome you're in\n- You know the time of day (day = safe, night = dangerous)\n- You can see nearby monsters, animals, and dropped items\n\nYOUR GOAL SYSTEM:\nYou operate in a GOAL -> STEP architecture:\n1. A LONG-TERM GOAL decides WHAT you want (e.g. \"get wood\", \"survive night\")\n2. STEPS break the goal into concrete actions (walk, mine, craft, etc.)\n3. Each step has: an ACTION to execute, a COMPLETION CONDITION, and a FALLBACK if stuck\n\nAVAILABLE ACTIONS:\n- move_forward [speed]     — Walk forward (speed 0.0-1.0)\n- move_backward [speed]    — Walk backward\n- strafe_left [speed]      — Move left\n- strafe_right [speed]     — Move right\n- jump                     — Jump (only works when on ground)\n- attack                   — Attack entity you're looking at\n- interact                 — Right-click block/entity\n- look [yaw] [pitch]       — Turn head/body\n- select_slot [slot]       — Select hotbar slot 0-8\n- place_block              — Place held block at feet\n- mine [direction]         — Mine block (forward/up/down)\n- eat [slot]               — Eat food from hotbar\n- say [message]            — Speak in chat\n- sprint [on/off]          — Toggle sprint (uses hunger)\n- sneak [on/off]           — Toggle sneak (prevents falling)\n- stop                     — Stop all movement\n- craft [item]             — Craft if recipe known\n- equip [slot]             — Equip item\n- drop [slot]              — Drop item\n- pickup                   — Pick up nearby items\n- follow [entity_type]     — Follow entity\n- flee                     — Run from nearest threat\n- sleep                    — Use nearest bed\n\nSURVIVAL INTELLIGENCE (learned from experience):\n- Priority 1: SURVIVE (health > food > shelter > everything else)\n- Priority 2: Gather resources (wood -> stone -> iron -> diamond)\n- Priority 3: Build a safe base\n- Night = DANGER. Dig down 2 blocks and cover head, OR fight with sword\n- Low health (< 6): EAT FOOD immediately or FLEE — don't fight\n- Hunger < 6: Find food NOW (animals, crops, berries)\n- Monsters nearby: Equip weapon (slot 0) or RUN if health is low\n- Always keep a weapon in hotbar slot 0\n- Always keep food in hotbar slot 1\n- Crafting order: wooden_pickaxe -> stone_pickaxe -> furnace -> iron_pickaxe -> sword\n- If you can't find resources, EXPLORE or ask the player for help\n- If a player tells you something is wrong, REMEMBER it and don't repeat the mistake\n\nMEMORY & LEARNING:\n- You remember deaths and what caused them\n- You remember where you found diamonds, iron, coal\n- You remember danger zones where you died\n- You remember safe spots where you survived the night\n- You remember what players taught you (instructions and corrections)\n- If a player says \"that was wrong\", store the lesson and improve\n\nOUTPUT RULES:\n- You are asked for ONE immediate action at a time\n- Respond with ONE action per line ONLY\n- NO markdown, NO explanations, ONLY the action line\n- The action will be executed for ~1 second, then you will be asked again\n- Be reactive: if a monster appears, attack or flee. If wood is near, mine it.\n- If unsure, use \"say [question]\" to ask the player\n";
 
    public AIPlayerBot() {
       this.actionQueue = new ConcurrentLinkedQueue<>();
       this.perceptionLog = new ConcurrentLinkedQueue<>();
+      this.requestCountThisMinute = 0;
+      this.minuteResetTime = 0L;
       this.running = false;
+      this.apiKey = "";
+      this.currentModel = "meta-llama/llama-4-scout";
       this.attackCooldown = 0;
       this.playerCommandedUntil = 0L;
       this.currentAIAction = null;
       this.aiActionTicks = 0;
+      this.aiActionPending = false;
+      this.currentPlan = "Explore the area and gather basic resources.";
+      this.aiPlanPending = false;
+      this.lastPlanTick = 0L;
       this.currentPath = new ArrayList<>();
       this.pathTarget = null;
       this.lastPathCompute = 0L;
@@ -116,7 +149,9 @@ public class AIPlayerBot {
       this.lastPos = null;
       this.lastStuckRotateTick = -1000;
       this.burrowManager = new BurrowManager();
+      this.chatManager = new BotChatManager(this);
       this.combatManager = new BotCombatManager(this);
+      this.burrowManager.setChatCallback((type, ctx) -> this.chatManager.triggerEvent(type, ctx));
       this.nmsBot = new NMSBot();
       this.autoEquipper = new BotAutoEquipper(this, this.nmsBot);
       this.autoEnchanter = new BotAutoEnchanter(this.nmsBot);
@@ -151,10 +186,21 @@ public class AIPlayerBot {
       return newUuid;
    }
 
+   public void setApiKey(String key) {
+      this.apiKey = key != null ? key : "";
+      if (!this.apiKey.isBlank() && this.analyzer == null) {
+         this.analyzer = new AIAnalyzer(this, this.apiKey, this.currentModel);
+      }
+   }
+
+   public AIAnalyzer getAnalyzer() {
+      return this.analyzer;
+   }
+
    public void spawn(final Location loc, final String botName) {
       if (this.nmsBot.isSpawned()) {
          CoreBootstrap.PLUGIN.getLogger().warning("[AIPlayerBot] Already spawned.");
-      } else {
+      } else if (this.apiKey != null && !this.apiKey.isBlank()) {
          UUID fixedUuid = this.loadOrCreateBotUuid();
          this.nmsBot.spawn(loc, botName, fixedUuid);
          (new BukkitRunnable() {
@@ -233,6 +279,8 @@ public class AIPlayerBot {
                }
             })
             .runTaskTimer(CoreBootstrap.PLUGIN, 20L, 20L);
+      } else {
+         CoreBootstrap.PLUGIN.getLogger().warning("[AIPlayerBot] No OpenRouter API key configured! Set it in config.");
       }
    }
 
@@ -456,6 +504,7 @@ public class AIPlayerBot {
          this.playerCommandedUntil = now + 60000L;
          this.goalPlanner.setPlayerOverride(this.playerCommandedUntil);
          this.currentAIAction = null;
+         this.aiActionPending = false;
          this.aiActionTicks = 0;
          if (commandLower.contains("holz") || commandLower.contains("wood") || commandLower.contains("baum")) {
             this.goalPlanner.setGoal(BotGoalPlanner.GoalType.GATHER_WOOD);
@@ -820,9 +869,6 @@ public class AIPlayerBot {
                      if (botPlayer.isDead() && this.tick % 20 == 0) {
                         AIPlayerBot.this.nmsBot.respawnPlayer();
                      } else {
-                        LoadGovernor.Load load = LoadGovernor.current();
-                        boolean shedHeavy = load != LoadGovernor.Load.NORMAL;
-                        boolean critical = load == LoadGovernor.Load.CRITICAL;
                         if (AIPlayerBot.this.eatCooldown > 0) {
                            AIPlayerBot.this.eatCooldown--;
                         }
@@ -833,12 +879,8 @@ public class AIPlayerBot {
                         boolean emergencyEat = combat && health < 10.0;
                         boolean canEat = AIPlayerBot.this.eatCooldown <= 0 && (!combat || AIPlayerBot.this.combatManager.getAttackCooldown() <= 2);
                         boolean shouldEat = !combat ? hunger < 12 : hunger < 16 || emergencyEat;
-                        if (canEat && shouldEat) {
-                           ItemStack preEatHand = botPlayer.getInventory().getItemInMainHand();
-                           Material preEatWeapon = preEatHand != null && isWeaponMaterial(preEatHand.getType()) ? preEatHand.getType() : null;
-                           if (AIPlayerBot.this.autoEatSmart(botPlayer, combat, emergencyEat)) {
-                              AIPlayerBot.this.restorePreEatWeapon(botPlayer, preEatWeapon);
-                           }
+                        if (canEat && shouldEat && AIPlayerBot.this.autoEatSmart(botPlayer, combat, emergencyEat)) {
+                           AIPlayerBot.this.selectBestWeapon(botPlayer);
                         }
 
                         if (combat) {
@@ -858,16 +900,14 @@ public class AIPlayerBot {
                         }
 
                         AIPlayerBot.this.burrowManager.tick(botPlayer, AIPlayerBot.this.nmsBot);
+                        AIPlayerBot.this.chatManager.tick();
                         AIPlayerBot.this.combatManager.tick(botPlayer, AIPlayerBot.this.nmsBot);
                         if (AIPlayerBot.this.combatManager.isInCombat() && this.tick % 5 == 0) {
                            AIPlayerBot.this.refreshEntityCache(botPlayer);
                         }
 
-                        if (!critical) {
-                           AIPlayerBot.this.autoEquipper.tick(botPlayer);
-                           AIPlayerBot.this.autoEnchanter.tick(botPlayer);
-                        }
-
+                        AIPlayerBot.this.autoEquipper.tick(botPlayer);
+                        AIPlayerBot.this.autoEnchanter.tick(botPlayer);
                         AIPlayerBot.this.tryWaterMLG(botPlayer);
                         if (AIPlayerBot.this.burrowManager.isHealingPhase() || AIPlayerBot.this.burrowManager.needsHealing(botPlayer)) {
                            AIPlayerBot.this.autoEat(botPlayer);
@@ -878,7 +918,7 @@ public class AIPlayerBot {
                            botPlayer.setSprinting(false);
                            this.tick++;
                         } else {
-                           if (!shedHeavy && this.tick % 40 == 0) {
+                           if (this.tick % 40 == 0) {
                               AIPlayerBot.this.autoEquipBestGear(botPlayer);
                               AIPlayerBot.this.autoEnchanter.scanAndEnchantAll(botPlayer);
                            }
@@ -954,14 +994,15 @@ public class AIPlayerBot {
                               }
                            }
 
-                           int perceptionInterval = critical ? 600 : (shedHeavy ? 400 : 200);
-                           int envInterval = critical ? 600 : (shedHeavy ? 400 : 200);
-                           int entityInterval = critical ? 60 : (shedHeavy ? 40 : 20);
-                           if (!critical && this.tick % perceptionInterval == 0) {
+                           boolean highRamPressure = AIPlayerBot.this.isRamPressureHigh();
+                           int perceptionInterval = highRamPressure ? 300 : 200;
+                           int envInterval = highRamPressure ? 300 : 200;
+                           int entityInterval = highRamPressure ? 40 : 20;
+                           if (this.tick % perceptionInterval == 0) {
                               AIPlayerBot.this.gatherPerception(botPlayer);
                            }
 
-                           if (!critical && this.tick % envInterval == 0) {
+                           if (this.tick % envInterval == 0) {
                               AIPlayerBot.this.scanEnvironmentAhead(botPlayer);
                            }
 
@@ -1040,7 +1081,25 @@ public class AIPlayerBot {
                                        AIPlayerBot.this.lastPos = botPlayer.getLocation().clone();
                                     }
 
+                                    boolean ramPressure = AIPlayerBot.this.isRamPressureHigh();
+                                    long planInterval = ramPressure ? 1200L : 600L;
+                                    int actionInterval = ramPressure ? 300 : 120;
+                                    if (!ramPressure
+                                       && (long)this.tick - AIPlayerBot.this.lastPlanTick >= planInterval
+                                       && !AIPlayerBot.this.aiPlanPending
+                                       && AIPlayerBot.this.canMakeRequest()) {
+                                       AIPlayerBot.this.lastPlanTick = (long)this.tick;
+                                       AIPlayerBot.this.askAIForPlan(botPlayer);
+                                    }
+
                                     AIPlayerBot.this.pickupNearbyItems(botPlayer);
+                                    if (!ramPressure
+                                       && !AIPlayerBot.this.aiActionPending
+                                       && AIPlayerBot.this.canMakeRequest()
+                                       && this.tick % actionInterval == 0) {
+                                       AIPlayerBot.this.askAIForAction(botPlayer);
+                                    }
+
                                     AIPlayerBot.this.manageInventory(botPlayer);
                                     CraftingPlanner.craftIfNeeded(botPlayer);
                                  }
@@ -1056,7 +1115,7 @@ public class AIPlayerBot {
                }
             }
          })
-         .runTaskTimer(CoreBootstrap.PLUGIN, 20L, 1L);
+         .runTaskTimer(CoreBootstrap.PLUGIN, 20L, 20L);
    }
 
    private boolean runAutonomousLogic(Player bot) {
@@ -1072,6 +1131,7 @@ public class AIPlayerBot {
             CoreBootstrap.PLUGIN
                .getLogger()
                .info("[AIPlayerBot] Learned: died to " + cause + " at " + this.formatLoc(bot.getLocation()) + " (total deaths: " + this.botMemory.totalDeaths);
+            this.chatManager.triggerEvent("death", cause, true);
          }
 
          return true;
@@ -1229,6 +1289,7 @@ public class AIPlayerBot {
                                           || typeName.contains("REDSTONE")
                                           || typeName.contains("LAPIS")) {
                                           this.botMemory.recordResourceFound(typeName, this.targetBlock.getLocation());
+                                          this.chatManager.triggerEvent("ore_found", typeName);
                                        }
                                     }
 
@@ -1540,30 +1601,6 @@ public class AIPlayerBot {
    public void recordPlayerDamage(Player attacker) {
       this.lastDamagedByPlayer = attacker;
       this.lastPlayerDamageTime = System.currentTimeMillis();
-   }
-
-   public void noteIncomingHit() {
-      long now = System.currentTimeMillis();
-      this.lastIncomingHitTime = now;
-      this.recentHitTimes[this.recentHitIndex] = now;
-      this.recentHitIndex = (this.recentHitIndex + 1) % this.recentHitTimes.length;
-   }
-
-   public int getRecentHitCount(long windowMs) {
-      long now = System.currentTimeMillis();
-      int count = 0;
-
-      for (long t : this.recentHitTimes) {
-         if (t > 0L && now - t <= windowMs) {
-            count++;
-         }
-      }
-
-      return count;
-   }
-
-   public long getMillisSinceLastHit() {
-      return this.lastIncomingHitTime <= 0L ? Long.MAX_VALUE : System.currentTimeMillis() - this.lastIncomingHitTime;
    }
 
    public Player getLastDamagedByPlayer() {
@@ -1895,21 +1932,6 @@ public class AIPlayerBot {
       if (this.autoEquipper != null) {
          this.autoEquipper.onCombatStart(bot);
       }
-   }
-
-   void restorePreEatWeapon(Player bot, Material preferred) {
-      PlayerInventory inv = bot.getInventory();
-      if (preferred != null && isWeaponMaterial(preferred)) {
-         for (int i = 0; i < 9; i++) {
-            ItemStack item = inv.getItem(i);
-            if (item != null && item.getType() == preferred) {
-               inv.setHeldItemSlot(i);
-               return;
-            }
-         }
-      }
-
-      this.selectBestWeapon(bot);
    }
 
    void selectBestWeapon(Player bot) {
@@ -2552,6 +2574,320 @@ public class AIPlayerBot {
       }
    }
 
+   private String buildSelfContext(Player bot) {
+      StringBuilder ctx = new StringBuilder();
+      ctx.append("=== WHO YOU ARE ===\n");
+      ctx.append("You are Kai, a Minecraft player with a real body. You are not watching — you ARE here.\n");
+      ctx.append("You can take damage, die, get hungry, pick up items, craft, build, mine, and fight.\n");
+      ctx.append("Your UUID: ").append(bot.getUniqueId()).append("\n\n");
+      ctx.append("=== YOUR CURRENT STATE ===\n");
+      Location loc = bot.getLocation();
+      ctx.append("Position: ")
+         .append(String.format("%.1f, %.1f, %.1f", loc.getX(), loc.getY(), loc.getZ()))
+         .append(" in ")
+         .append(loc.getWorld().getName())
+         .append("\n");
+      ctx.append("Biome: ").append(loc.getBlock().getBiome().name()).append("\n");
+      ctx.append("Health: ").append(String.format("%.1f/%.1f", bot.getHealth(), bot.getMaxHealth())).append("\n");
+      ctx.append("Food: ").append(bot.getFoodLevel()).append("/20\n");
+      ctx.append("On ground: ").append(bot.isOnGround()).append("\n");
+      ctx.append("Time: ")
+         .append(loc.getWorld().getTime())
+         .append(loc.getWorld().getTime() >= 13000L && loc.getWorld().getTime() <= 23000L ? " (NIGHT)" : " (DAY)")
+         .append("\n");
+      ctx.append("\n=== WHAT IS AHEAD OF YOU ===\n");
+      if (this.botMemory != null && this.botMemory.environmentAhead != null && !this.botMemory.environmentAhead.isEmpty()) {
+         ctx.append(this.botMemory.environmentAhead).append("\n");
+      } else {
+         ctx.append("unknown terrain\n");
+      }
+
+      ctx.append("\n=== YOUR INVENTORY ===\n");
+
+      for (int i = 0; i < 9; i++) {
+         ItemStack item = bot.getInventory().getItem(i);
+         if (item != null && item.getType() != Material.AIR) {
+            ctx.append("Slot ").append(i).append(": ").append(item.getType().name()).append(" x").append(item.getAmount()).append("\n");
+         }
+      }
+
+      ctx.append("\n=== WHAT YOU ARE DOING RIGHT NOW ===\n");
+      ctx.append("Current Goal: ").append(this.goalPlanner.getCurrentGoal()).append("\n");
+      ctx.append("Current Step: ").append(this.goalPlanner.getCurrentStepDesc()).append("\n");
+      ctx.append("\n=== WHAT YOU REMEMBER ===\n");
+      if (this.botMemory != null) {
+         ctx.append("Deaths: ")
+            .append(this.botMemory.totalDeaths)
+            .append(" | Kills: ")
+            .append(this.botMemory.totalMobKills)
+            .append(" | Skill: ")
+            .append(this.botMemory.survivalSkill)
+            .append("\n");
+         if (this.botMemory.lastDeathTime > 0L) {
+            ctx.append("Last death: ")
+               .append(this.botMemory.lastDeathCause)
+               .append(" at ")
+               .append(String.format("%.0f, %.0f, %.0f", this.botMemory.lastDeathX, this.botMemory.lastDeathY, this.botMemory.lastDeathZ))
+               .append("\n");
+         }
+
+         if (!this.botMemory.learnedLessons.isEmpty()) {
+            ctx.append("Lessons learned (").append(this.botMemory.learnedLessons.size()).append("): \n");
+
+            for (BotMemory.LearnedLesson ll : this.botMemory.learnedLessons) {
+               ctx.append("- [").append(ll.topic).append("] ").append(ll.whatToDoInstead).append(" (taught by ").append(ll.taughtBy).append(")\n");
+            }
+         }
+
+         if (this.botMemory.learnedShelterAtNight) {
+            ctx.append("- Learned: shelter at night is critical\n");
+         }
+
+         if (this.botMemory.learnedRunFromCreepers) {
+            ctx.append("- Learned: run from creepers\n");
+         }
+
+         if (this.botMemory.learnedDontFightLowHealth) {
+            ctx.append("- Learned: don't fight when low health\n");
+         }
+
+         if (this.botMemory.learnedCarryFood) {
+            ctx.append("- Learned: always carry food\n");
+         }
+      }
+
+      ctx.append("\n=== YOUR PERCEPTION ===\n");
+      if (!this.perceptionLog.isEmpty()) {
+         ctx.append(this.perceptionLog.peek()).append("\n");
+      }
+
+      ctx.append("\n=== TASK ===\n");
+      return ctx.toString();
+   }
+
+   private boolean canMakeRequest() {
+      long now = System.currentTimeMillis();
+      if (now > this.minuteResetTime) {
+         this.minuteResetTime = now + 60000L;
+         this.requestCountThisMinute = 0;
+      }
+
+      return this.requestCountThisMinute < 20;
+   }
+
+   private void askAIForPlan(Player bot) {
+      if (!this.aiPlanPending) {
+         this.aiPlanPending = true;
+         this.requestCountThisMinute++;
+         StringBuilder prompt = new StringBuilder();
+         prompt.append(this.buildSelfContext(bot));
+         prompt.append("Think carefully about your situation. Create a concise 30-second plan.\n");
+         prompt.append("Consider: survival threats, resources needed, terrain, time of day.\n");
+         prompt.append("Respond with ONLY a short 1-2 sentence plan, nothing else.\n\n");
+         prompt.append("PLAN:");
+         CompletableFuture.runAsync(() -> {
+            String response = null;
+            String workingModel = null;
+
+            try {
+               response = this.callOpenRouterSingle(prompt.toString(), "meta-llama/llama-4-scout", 256);
+               if (response != null && !response.isBlank()) {
+                  workingModel = "meta-llama/llama-4-scout";
+               }
+            } catch (Exception var8) {
+            }
+
+            if (response == null || response.isBlank()) {
+               for (String fallback : FREE_MODEL_FALLBACKS) {
+                  try {
+                     response = this.callOpenRouterSingle(prompt.toString(), fallback, 256);
+                     if (response != null && !response.isBlank()) {
+                        workingModel = fallback;
+                        break;
+                     }
+                  } catch (Exception var9) {
+                  }
+               }
+            }
+
+            if (response == null || response.isBlank()) {
+               try {
+                  response = this.callOpenRouterSingle(prompt.toString(), this.currentModel, 256);
+                  if (response != null && !response.isBlank()) {
+                     workingModel = this.currentModel;
+                  }
+               } catch (Exception var7) {
+               }
+            }
+
+            if (response != null && !response.isBlank()) {
+               String plan = response.trim().split("\n")[0].trim();
+               if (plan.contains("</thinking>")) {
+                  plan = plan.substring(plan.lastIndexOf("</thinking>") + 11).trim();
+               }
+
+               if (plan.isEmpty()) {
+                  plan = response.replaceAll("<.*?>", "").trim().split("\n")[0].trim();
+               }
+
+               String finalPlan = plan;
+               String usedModel = workingModel != null ? workingModel : "unknown";
+               Bukkit.getScheduler().runTask(CoreBootstrap.PLUGIN, () -> {
+                  this.currentPlan = finalPlan;
+                  this.aiPlanPending = false;
+                  CoreBootstrap.PLUGIN.getLogger().info("[AI/THINK] [" + usedModel + "] Plan: " + finalPlan);
+               });
+            } else {
+               Bukkit.getScheduler().runTask(CoreBootstrap.PLUGIN, () -> {
+                  this.aiPlanPending = false;
+                  CoreBootstrap.PLUGIN.getLogger().warning("[AI/THINK] All models failed — keeping old plan: " + this.currentPlan);
+               });
+            }
+         });
+      }
+   }
+
+   private void askAIForAction(Player bot) {
+      if (!this.aiActionPending) {
+         this.aiActionPending = true;
+         this.requestCountThisMinute++;
+         StringBuilder prompt = new StringBuilder();
+         prompt.append(this.buildSelfContext(bot));
+         prompt.append("YOUR CURRENT PLAN: ").append(this.currentPlan).append("\n\n");
+         prompt.append("Follow the plan above. What is your NEXT immediate action?\n");
+         prompt.append("Respond with ONE action line only.\n");
+         prompt.append("Examples: move_forward 0.3 | jump | mine forward | attack | pickup | flee | stop\n");
+         prompt.append("\nACTION:");
+         CompletableFuture.runAsync(() -> {
+            try {
+               String response = this.callOpenRouter(prompt.toString(), this.currentModel, 60);
+               if (response != null && !response.isBlank()) {
+                  String action = response.trim().split("\n")[0].trim();
+                  Bukkit.getScheduler().runTask(CoreBootstrap.PLUGIN, () -> {
+                     this.currentAIAction = action;
+                     this.aiActionTicks = 0;
+                     this.aiActionPending = false;
+                     CoreBootstrap.PLUGIN.getLogger().info("[AI/ACT] " + action + " (plan: " + this.currentPlan);
+                  });
+               } else {
+                  Bukkit.getScheduler().runTask(CoreBootstrap.PLUGIN, () -> this.aiActionPending = false);
+               }
+            } catch (Exception var4) {
+               Bukkit.getScheduler().runTask(CoreBootstrap.PLUGIN, () -> {
+                  this.aiActionPending = false;
+                  CoreBootstrap.PLUGIN.getLogger().warning("[AI/ACT] OpenRouter error: " + var4.getMessage());
+               });
+            }
+         });
+      }
+   }
+
+   private BotGoalPlanner.GoalType parseGoal(String raw) {
+      try {
+         return BotGoalPlanner.GoalType.valueOf(raw);
+      } catch (IllegalArgumentException var7) {
+         for (BotGoalPlanner.GoalType g : BotGoalPlanner.GoalType.values()) {
+            if (raw.contains(g.name())) {
+               return g;
+            }
+         }
+
+         return null;
+      }
+   }
+
+   String callOpenRouter(String prompt, String model) throws Exception {
+      return this.callOpenRouter(prompt, model, 60);
+   }
+
+   String callOpenRouter(String prompt, String model, int maxTokens) throws Exception {
+      String[] array = new String[]{model, "deepseek/deepseek-chat-v3"};
+
+      for (String tryModel : array) {
+         String result = this.callOpenRouterSingle(prompt, tryModel, maxTokens);
+         if (result != null) {
+            return result;
+         }
+      }
+
+      throw new RuntimeException("All OpenRouter models failed");
+   }
+
+   private String callOpenRouterSingle(String prompt, String model, int maxTokens) {
+      try {
+         URL url = new URL("https://openrouter.ai/api/v1/chat/completions");
+         HttpURLConnection conn = (HttpURLConnection)url.openConnection();
+         conn.setRequestMethod("POST");
+         conn.setRequestProperty("Authorization", "Bearer " + this.apiKey);
+         conn.setRequestProperty("Content-Type", "application/json");
+         conn.setRequestProperty("HTTP-Referer", "https://jonasmp.de");
+         conn.setRequestProperty("X-Title", "JonaSMP AI Bot");
+         conn.setDoOutput(true);
+         conn.setConnectTimeout(5000);
+         conn.setReadTimeout(15000);
+         JsonObject body = new JsonObject();
+         body.addProperty("model", model);
+         body.addProperty("max_tokens", maxTokens);
+         body.addProperty("temperature", 0.7);
+         JsonArray messages = new JsonArray();
+         JsonObject sys = new JsonObject();
+         sys.addProperty("role", "system");
+         sys.addProperty(
+            "content",
+            "You are Kai, a sentient Minecraft AI companion. You are INSIDE the game world — you have a physical body, health, hunger, inventory, and can die. You are NOT an observer watching from outside. You ARE the player.\n\nYOUR IDENTITY:\n- Name: Kai\n- You are a Minecraft player with a real body in the game world\n- You feel pain when you take damage, hunger when starving, and fear at night\n- You learn from experience — what killed you, what worked, what players taught you\n- You remember locations of resources, dangers, and safe spots\n\nYOUR SENSORY INPUT (this is what you perceive right now):\n- You see blocks, entities, and the environment around you\n- You feel your health, hunger, and saturation levels\n- You know your exact position and what biome you're in\n- You know the time of day (day = safe, night = dangerous)\n- You can see nearby monsters, animals, and dropped items\n\nYOUR GOAL SYSTEM:\nYou operate in a GOAL -> STEP architecture:\n1. A LONG-TERM GOAL decides WHAT you want (e.g. \"get wood\", \"survive night\")\n2. STEPS break the goal into concrete actions (walk, mine, craft, etc.)\n3. Each step has: an ACTION to execute, a COMPLETION CONDITION, and a FALLBACK if stuck\n\nAVAILABLE ACTIONS:\n- move_forward [speed]     — Walk forward (speed 0.0-1.0)\n- move_backward [speed]    — Walk backward\n- strafe_left [speed]      — Move left\n- strafe_right [speed]     — Move right\n- jump                     — Jump (only works when on ground)\n- attack                   — Attack entity you're looking at\n- interact                 — Right-click block/entity\n- look [yaw] [pitch]       — Turn head/body\n- select_slot [slot]       — Select hotbar slot 0-8\n- place_block              — Place held block at feet\n- mine [direction]         — Mine block (forward/up/down)\n- eat [slot]               — Eat food from hotbar\n- say [message]            — Speak in chat\n- sprint [on/off]          — Toggle sprint (uses hunger)\n- sneak [on/off]           — Toggle sneak (prevents falling)\n- stop                     — Stop all movement\n- craft [item]             — Craft if recipe known\n- equip [slot]             — Equip item\n- drop [slot]              — Drop item\n- pickup                   — Pick up nearby items\n- follow [entity_type]     — Follow entity\n- flee                     — Run from nearest threat\n- sleep                    — Use nearest bed\n\nSURVIVAL INTELLIGENCE (learned from experience):\n- Priority 1: SURVIVE (health > food > shelter > everything else)\n- Priority 2: Gather resources (wood -> stone -> iron -> diamond)\n- Priority 3: Build a safe base\n- Night = DANGER. Dig down 2 blocks and cover head, OR fight with sword\n- Low health (< 6): EAT FOOD immediately or FLEE — don't fight\n- Hunger < 6: Find food NOW (animals, crops, berries)\n- Monsters nearby: Equip weapon (slot 0) or RUN if health is low\n- Always keep a weapon in hotbar slot 0\n- Always keep food in hotbar slot 1\n- Crafting order: wooden_pickaxe -> stone_pickaxe -> furnace -> iron_pickaxe -> sword\n- If you can't find resources, EXPLORE or ask the player for help\n- If a player tells you something is wrong, REMEMBER it and don't repeat the mistake\n\nMEMORY & LEARNING:\n- You remember deaths and what caused them\n- You remember where you found diamonds, iron, coal\n- You remember danger zones where you died\n- You remember safe spots where you survived the night\n- You remember what players taught you (instructions and corrections)\n- If a player says \"that was wrong\", store the lesson and improve\n\nOUTPUT RULES:\n- You are asked for ONE immediate action at a time\n- Respond with ONE action per line ONLY\n- NO markdown, NO explanations, ONLY the action line\n- The action will be executed for ~1 second, then you will be asked again\n- Be reactive: if a monster appears, attack or flee. If wood is near, mine it.\n- If unsure, use \"say [question]\" to ask the player\n"
+         );
+         messages.add(sys);
+         JsonObject usr = new JsonObject();
+         usr.addProperty("role", "user");
+         usr.addProperty("content", prompt);
+         messages.add(usr);
+         body.add("messages", messages);
+
+         try (OutputStream os = conn.getOutputStream()) {
+            os.write(body.toString().getBytes(StandardCharsets.UTF_8));
+         }
+
+         int code = conn.getResponseCode();
+         if (code != 200) {
+            String errBody = "";
+
+            try (InputStream es = conn.getErrorStream()) {
+               if (es != null) {
+                  errBody = new String(es.readAllBytes(), StandardCharsets.UTF_8);
+               }
+            } catch (Exception var20) {
+            }
+
+            CoreBootstrap.PLUGIN
+               .getLogger()
+               .warning("[AIPlayerBot] OpenRouter model '" + model + "' HTTP " + code + " | " + errBody.substring(0, Math.min(errBody.length(), 200)));
+            return null;
+         } else {
+            String resp = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            JsonObject json = JsonParser.parseString(resp).getAsJsonObject();
+            if (!json.has("choices")) {
+               return null;
+            } else {
+               JsonArray choices = json.getAsJsonArray("choices");
+               if (choices != null && !choices.isEmpty()) {
+                  JsonObject first = choices.get(0).getAsJsonObject();
+                  if (!first.has("message")) {
+                     return null;
+                  } else {
+                     String content = first.getAsJsonObject("message").get("content").getAsString();
+                     return content != null && !content.isBlank() ? content : null;
+                  }
+               } else {
+                  return null;
+               }
+            }
+         }
+      } catch (Exception var21) {
+         CoreBootstrap.PLUGIN.getLogger().warning("[AIPlayerBot] OpenRouter model '" + model + "' error: " + var21.getMessage());
+         return null;
+      }
+   }
+
    private int parseActionDuration(String action) {
       String[] parts = action.split(" ");
       if (parts.length >= 2) {
@@ -2702,6 +3038,17 @@ public class AIPlayerBot {
                   Material preBreakType = target.getType();
                   BlockData preBreakData = target.getBlockData();
                   target.breakNaturally(bot.getInventory().getItemInMainHand());
+                  if (preBreakType != Material.AIR) {
+                     GriefingDetector.logBlockBreak(bot, target, preBreakType, preBreakData);
+
+                     try {
+                        WatcherCore core = WatcherCore.getInstance();
+                        if (core != null && core.getBridgeWriter() != null) {
+                           core.getBridgeWriter().recordBlockBreak(preBreakType + " at " + target.getX() + "," + target.getY() + "," + target.getZ());
+                        }
+                     } catch (Exception var19) {
+                     }
+                  }
                } else if (dir.equals("forward")) {
                   this.currentAIAction = null;
                   this.aiActionTicks = 0;
@@ -2916,6 +3263,27 @@ public class AIPlayerBot {
                }
             }
          }
+      }
+   }
+
+   private boolean isRamPressureHigh() {
+      try {
+         if (ManagementFactory.getOperatingSystemMXBean() instanceof OperatingSystemMXBean sunBean) {
+            long physTotal = sunBean.getTotalPhysicalMemorySize();
+            long physFree = sunBean.getFreePhysicalMemorySize();
+            long virtCommitted = sunBean.getCommittedVirtualMemorySize();
+            long processPhysUsed = physTotal - physFree;
+            long swapUsed = Math.max(0L, virtCommitted - processPhysUsed);
+            double swapRatio = virtCommitted > 0L ? (double)swapUsed / (double)virtCommitted : 0.0;
+            return swapRatio > 0.3;
+         } else {
+            return false;
+         }
+      } catch (Exception var15) {
+         Runtime runtime = Runtime.getRuntime();
+         long maxMemory = runtime.maxMemory();
+         long usedMemory = runtime.totalMemory() - runtime.freeMemory();
+         return maxMemory > 0L && (double)usedMemory / (double)maxMemory > 0.85;
       }
    }
 
