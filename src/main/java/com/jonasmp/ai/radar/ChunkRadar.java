@@ -1,6 +1,7 @@
 package com.jonasmp.ai.radar;
 
 import com.jonasmp.ai.bootstrap.CoreBootstrap;
+import com.jonasmp.ai.bootstrap.LoadGovernor;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -164,6 +165,10 @@ public class ChunkRadar {
    }
 
    private void refreshAroundBot() {
+      if (LoadGovernor.isCritical()) {
+         return;
+      }
+
       if (this.trackedBot != null && this.trackedBot.isOnline()) {
          Location loc = this.trackedBot.getLocation();
          World world = loc.getWorld();

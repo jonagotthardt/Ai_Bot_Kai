@@ -2,14 +2,13 @@ package com.jonasmp.ai.watcher;
 
 import com.jonasmp.ai.JonaSMP_AI;
 import com.jonasmp.ai.bootstrap.CoreBootstrap;
-import com.sun.management.OperatingSystemMXBean;
+import com.jonasmp.ai.bootstrap.LoadGovernor;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -818,6 +817,9 @@ public class AIPlayerBot {
                      if (botPlayer.isDead() && this.tick % 20 == 0) {
                         AIPlayerBot.this.nmsBot.respawnPlayer();
                      } else {
+                        LoadGovernor.Load load = LoadGovernor.current();
+                        boolean shedHeavy = load != LoadGovernor.Load.NORMAL;
+                        boolean critical = load == LoadGovernor.Load.CRITICAL;
                         if (AIPlayerBot.this.eatCooldown > 0) {
                            AIPlayerBot.this.eatCooldown--;
                         }
@@ -854,8 +856,11 @@ public class AIPlayerBot {
                            AIPlayerBot.this.refreshEntityCache(botPlayer);
                         }
 
-                        AIPlayerBot.this.autoEquipper.tick(botPlayer);
-                        AIPlayerBot.this.autoEnchanter.tick(botPlayer);
+                        if (!critical) {
+                           AIPlayerBot.this.autoEquipper.tick(botPlayer);
+                           AIPlayerBot.this.autoEnchanter.tick(botPlayer);
+                        }
+
                         AIPlayerBot.this.tryWaterMLG(botPlayer);
                         if (AIPlayerBot.this.burrowManager.isHealingPhase() || AIPlayerBot.this.burrowManager.needsHealing(botPlayer)) {
                            AIPlayerBot.this.autoEat(botPlayer);
@@ -866,7 +871,7 @@ public class AIPlayerBot {
                            botPlayer.setSprinting(false);
                            this.tick++;
                         } else {
-                           if (this.tick % 40 == 0) {
+                           if (!shedHeavy && this.tick % 40 == 0) {
                               AIPlayerBot.this.autoEquipBestGear(botPlayer);
                               AIPlayerBot.this.autoEnchanter.scanAndEnchantAll(botPlayer);
                            }
@@ -942,15 +947,14 @@ public class AIPlayerBot {
                               }
                            }
 
-                           boolean highRamPressure = AIPlayerBot.this.isRamPressureHigh();
-                           int perceptionInterval = highRamPressure ? 300 : 200;
-                           int envInterval = highRamPressure ? 300 : 200;
-                           int entityInterval = highRamPressure ? 40 : 20;
-                           if (this.tick % perceptionInterval == 0) {
+                           int perceptionInterval = critical ? 600 : (shedHeavy ? 400 : 200);
+                           int envInterval = critical ? 600 : (shedHeavy ? 400 : 200);
+                           int entityInterval = critical ? 60 : (shedHeavy ? 40 : 20);
+                           if (!critical && this.tick % perceptionInterval == 0) {
                               AIPlayerBot.this.gatherPerception(botPlayer);
                            }
 
-                           if (this.tick % envInterval == 0) {
+                           if (!critical && this.tick % envInterval == 0) {
                               AIPlayerBot.this.scanEnvironmentAhead(botPlayer);
                            }
 
@@ -2866,27 +2870,6 @@ public class AIPlayerBot {
                }
             }
          }
-      }
-   }
-
-   private boolean isRamPressureHigh() {
-      try {
-         if (ManagementFactory.getOperatingSystemMXBean() instanceof OperatingSystemMXBean sunBean) {
-            long physTotal = sunBean.getTotalPhysicalMemorySize();
-            long physFree = sunBean.getFreePhysicalMemorySize();
-            long virtCommitted = sunBean.getCommittedVirtualMemorySize();
-            long processPhysUsed = physTotal - physFree;
-            long swapUsed = Math.max(0L, virtCommitted - processPhysUsed);
-            double swapRatio = virtCommitted > 0L ? (double)swapUsed / (double)virtCommitted : 0.0;
-            return swapRatio > 0.3;
-         } else {
-            return false;
-         }
-      } catch (Exception var15) {
-         Runtime runtime = Runtime.getRuntime();
-         long maxMemory = runtime.maxMemory();
-         long usedMemory = runtime.totalMemory() - runtime.freeMemory();
-         return maxMemory > 0L && (double)usedMemory / (double)maxMemory > 0.85;
       }
    }
 
