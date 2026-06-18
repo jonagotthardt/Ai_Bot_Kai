@@ -77,6 +77,7 @@ public class AIPlayerBot {
    private static final int STUCK_ROTATE_COOLDOWN = 60;
    private final BurrowManager burrowManager;
    private final BotCombatManager combatManager;
+   private final com.jonasmp.ai.combat.ComboLearner comboLearner = new com.jonasmp.ai.combat.ComboLearner();
    private final BotAutoEquipper autoEquipper;
    private final BotAutoEnchanter autoEnchanter;
    private List<Entity> cachedNearbyEntities;
@@ -268,6 +269,7 @@ public class AIPlayerBot {
             .info("[AIPlayerBot] Memory saved. Skill=" + this.botMemory.survivalSkill + " LongestSurvival=" + this.botMemory.longestSurvivalMinutes + "min");
       }
 
+      this.comboLearner.flushAll();
       this.nmsBot.despawn();
       CoreBootstrap.PLUGIN.getLogger().info("[AIPlayerBot] AI Bot despawned.");
    }
@@ -434,6 +436,10 @@ public class AIPlayerBot {
 
    public BotCombatManager getCombatManager() {
       return this.combatManager;
+   }
+
+   public com.jonasmp.ai.combat.ComboLearner getComboLearner() {
+      return this.comboLearner;
    }
 
    public BotMemory getBotMemory() {
@@ -863,6 +869,10 @@ public class AIPlayerBot {
                         AIPlayerBot.this.combatManager.tick(botPlayer, AIPlayerBot.this.nmsBot);
                         if (AIPlayerBot.this.combatManager.isInCombat() && this.tick % 5 == 0) {
                            AIPlayerBot.this.refreshEntityCache(botPlayer);
+                        }
+
+                        if (this.tick % 20 == 0) {
+                           AIPlayerBot.this.comboLearner.maintenance();
                         }
 
                         if (!critical) {

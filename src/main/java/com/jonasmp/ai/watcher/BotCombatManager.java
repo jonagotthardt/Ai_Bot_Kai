@@ -2,6 +2,7 @@ package com.jonasmp.ai.watcher;
 
 import com.jonasmp.ai.bootstrap.CoreBootstrap;
 import com.jonasmp.ai.combat.CombatTactic;
+import com.jonasmp.ai.combat.ComboTracker;
 import com.jonasmp.ai.combat.OpponentMemory;
 import com.jonasmp.ai.combat.OpponentProfile;
 import java.util.UUID;
@@ -49,6 +50,13 @@ public class BotCombatManager {
    private static final double AXE_OPTIMAL_MIN = 1.0;
    private static final double AXE_OPTIMAL_MAX = 2.5;
    private static final int REWARD_WINDOW_TICKS = 20;
+   private static final double PREDICT_MIN_CONFIDENCE = 0.5;
+   private static final long PREDICT_LOOKAHEAD_MS = 450L;
+   private static final long PREDICT_GRACE_MS = 100L;
+   private static final double PREDICT_MAX_BLOCK_RATE = 0.7;
+   private static final double PREDICT_BLOCK_SCALE = 0.8;
+   private static final int PREDICT_MAX_DELAY_TICKS = 8;
+   private boolean comboDefenseEnabled = true;
    private final OpponentMemory opponentMemory = new OpponentMemory();
    private boolean adaptiveEnabled = true;
    private OpponentProfile activeProfile;
@@ -96,6 +104,36 @@ public class BotCombatManager {
       this.wTapEnabled = cfg.getBoolean("bot.combat.w_tap", true);
       this.blockHitEnabled = cfg.getBoolean("bot.combat.block_hit", true);
       this.adaptiveEnabled = cfg.getBoolean("bot.combat.adaptive", true);
+      this.comboDefenseEnabled = cfg.getBoolean("bot.combat.combo_defense", true);
+   }
+
+   /**
+    * Predictive defense: if the opponent's learned combo rhythm says a hit is imminent,
+    * returns the shield-raise delay (ticks) so the block lands in the predicted window;
+    * -1 if no confident prediction. Stays human: probabilistic, jittered, cooldown-gated.
+    */
+   private int predictiveShieldDelay(Entity target) {
+      if (!this.comboDefenseEnabled || this.aiBot == null || target == null) {
+         return -1;
+      }
+      ComboTracker tracker = this.aiBot.getComboLearner().getActiveTracker(target);
+      if (tracker == null) {
+         return -1;
+      }
+      long now = System.currentTimeMillis();
+      if (!tracker.isComboActive(now) || tracker.confidence() < PREDICT_MIN_CONFIDENCE) {
+         return -1;
+      }
+      long eta = tracker.nextHitEtaMs(now);
+      if (eta == Long.MAX_VALUE || eta > PREDICT_LOOKAHEAD_MS || eta < -PREDICT_GRACE_MS) {
+         return -1;
+      }
+      double pBlock = Math.min(PREDICT_MAX_BLOCK_RATE, tracker.confidence() * PREDICT_BLOCK_SCALE);
+      if (Math.random() > pBlock) {
+         return -1;
+      }
+      int delay = (int) Math.round(eta / 50.0) + (int) Math.round((Math.random() - 0.5) * 2.0);
+      return Math.max(1, Math.min(delay, PREDICT_MAX_DELAY_TICKS));
    }
 
    public boolean isInCombat() {
@@ -329,6 +367,7 @@ public class BotCombatManager {
                boolean fleeing = health <= FLEE_HEALTH;
                boolean hasShield = this.hasShieldInOffhand(bot);
                boolean attackReady = this.isAttackReady(bot, target) && dist <= optimalMax + 0.3;
+               int predictedShieldDelay = this.predictiveShieldDelay(target);
                if (this.isShieldBlocking) {
                   this.shieldBlockTicks++;
                }
@@ -376,6 +415,9 @@ public class BotCombatManager {
                   if (this.shieldRaiseDelay <= 0 && hasShield && this.shieldBlockCooldown <= 0 && !attackReady) {
                      this.raiseShield(nmsBot);
                   }
+               } else if (hasShield && this.shieldBlockCooldown <= 0 && !attackReady
+                     && dist <= optimalMax + 1.2 && predictedShieldDelay > 0) {
+                  this.shieldRaiseDelay = predictedShieldDelay;
                } else if (hasShield
                      && this.shieldBlockCooldown <= 0
                      && !attackReady
