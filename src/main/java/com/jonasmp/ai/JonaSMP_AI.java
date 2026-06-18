@@ -4,6 +4,7 @@ import com.jonasmp.ai.bootstrap.CoreBootstrap;
 import com.jonasmp.ai.command.KaiCommand;
 import com.jonasmp.ai.radar.ChunkRadar;
 import com.jonasmp.ai.watcher.AIPlayerBot;
+import com.jonasmp.ai.watcher.BotCombatListener;
 import com.jonasmp.ai.watcher.BotRespawnListener;
 import org.bukkit.Bukkit;
 import org.bukkit.command.PluginCommand;
@@ -52,6 +53,7 @@ public final class JonaSMP_AI extends JavaPlugin {
 
       this.aiPlayerBot = new AIPlayerBot();
       Bukkit.getPluginManager().registerEvents(new BotRespawnListener(this.aiPlayerBot), this);
+      Bukkit.getPluginManager().registerEvents(new BotCombatListener(this.aiPlayerBot), this);
 
       PluginCommand command = this.getCommand("kai");
       if (command != null) {
