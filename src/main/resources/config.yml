@@ -1,48 +1,10 @@
 # Kai 2.0 configuration.
-# All durations are in server ticks (20 ticks = 1 second) unless noted.
+#
+# Kai 2.0's behaviour (combat timing, goal priorities, movement) is currently
+# tuned in code (BotCombatManager / BotGoalPlanner / NMSBot). This file is
+# reserved for future live-tunable settings; the control loop runs every tick
+# for player-like responsiveness.
 
 bot:
-  # Name of the FakePlayer Kai drives. Must be a valid player name.
+  # Display name of the FakePlayer Kai drives. Must be a valid player name.
   name: "Kai"
-  # Spawn Kai automatically when the plugin enables (requires FakePlayer installed).
-  auto-spawn: false
-
-scheduler:
-  # Per-tick time budget (in microseconds) for distributed background work
-  # (radar scans, memory maintenance). Keeps tick cost flat instead of spiky.
-  budget-micros: 500
-
-control:
-  # How often the movement/aim/attack loop runs. 1 = every tick (most responsive).
-  # This is the loop that prevents the "one move decision per tick" feel of Kai 1.x.
-  interval-ticks: 1
-
-radar:
-  # How often the ChunkRadar refreshes its view (cached between refreshes).
-  refresh-ticks: 20
-  # Radius around Kai (in chunks) the radar keeps warm.
-  radius-chunks: 4
-  # How long a cached chunk entry stays valid before it is considered stale (ticks).
-  entry-ttl-ticks: 200
-
-memory:
-  # How long a remembered player/threat entry survives without an update (ticks).
-  ttl-ticks: 1200
-
-pvp:
-  # Maximum distance (blocks) at which Kai will acquire a target.
-  engage-range: 16.0
-  # Preferred fighting distance (blocks). Kai strafes around this radius.
-  preferred-range: 2.6
-  # Melee reach (blocks).
-  reach: 3.0
-  # How often (ticks) Kai re-selects its target.
-  target-refresh-ticks: 10
-  # How often (ticks) Kai re-evaluates line-of-sight (cached in between).
-  los-refresh-ticks: 5
-  # How often (ticks) Kai re-evaluates which weapon to hold.
-  gear-refresh-ticks: 40
-  # Movement speed factor applied to velocity-based motion.
-  move-speed: 0.22
-  # Also engage hostile mobs, not only players.
-  target-mobs: true
