@@ -1,0 +1,16 @@
+name: Kai
+version: ${project.version}
+main: dev.kai.KaiPlugin
+api-version: '26.1.2'
+description: ${project.description}
+author: jonagotthardt
+softdepend: [fakeplayer]
+commands:
+  kai:
+    description: Control the Kai AI agent.
+    usage: /kai <spawn|despawn|status|engage|stop>
+    permission: kai.command
+permissions:
+  kai.command:
+    description: Allows controlling the Kai AI agent.
+    default: op
