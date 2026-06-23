@@ -32,13 +32,17 @@ import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Monster;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
+import org.bukkit.inventory.meta.Damageable;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.scheduler.BukkitRunnable;
 
 public class AIPlayerBot {
@@ -51,6 +55,7 @@ public class AIPlayerBot {
    private BukkitRunnable aiTickTask;
    private int attackCooldown;
    private int eatCooldown = 0;
+   private int xpMendCooldown = 0;
    private static final int EAT_COOLDOWN_TICKS = 15;
    private long playerCommandedUntil;
    private static final long PLAYER_COMMAND_DURATION_MS = 60000L;
@@ -880,6 +885,7 @@ public class AIPlayerBot {
                         if (!critical) {
                            AIPlayerBot.this.autoEquipper.tick(botPlayer);
                            AIPlayerBot.this.autoEnchanter.tick(botPlayer);
+                           AIPlayerBot.this.tryXpMend(botPlayer, combat);
                         }
 
                         AIPlayerBot.this.tryWaterMLG(botPlayer);
@@ -1945,6 +1951,114 @@ public class AIPlayerBot {
       }
 
       this.selectBestWeapon(bot);
+   }
+
+   /**
+    * In a safe window, throws an experience bottle to keep the most-damaged Mending piece topped
+    * up, then leaves a weapon selected. Throttled and skipped when a swing is imminent / the target
+    * is in range, so it never interrupts a trade. Deterministic consume-and-apply, like {@link #autoEat}.
+    */
+   private boolean tryXpMend(Player bot, boolean combat) {
+      if (this.xpMendCooldown > 0) {
+         this.xpMendCooldown--;
+         return false;
+      }
+      FileConfiguration cfg = JonaSMP_AI.getInstance().getConfig();
+      if (!cfg.getBoolean("bot.combat.xp_mending", true)) {
+         return false;
+      }
+      if (combat) {
+         Entity target = this.combatManager.getCurrentTarget();
+         if (target != null) {
+            boolean tooClose = target.getWorld() == bot.getWorld()
+               && target.getLocation().distanceSquared(bot.getLocation()) < 25.0;
+            if (tooClose || this.combatManager.getAttackCooldown() <= 4) {
+               return false;
+            }
+         }
+      }
+
+      PlayerInventory inv = bot.getInventory();
+      int bottleSlot = -1;
+      for (int i = 0; i < inv.getSize(); i++) {
+         ItemStack it = inv.getItem(i);
+         if (it != null && it.getType() == Material.EXPERIENCE_BOTTLE) {
+            bottleSlot = i;
+            break;
+         }
+      }
+      if (bottleSlot < 0) {
+         return false;
+      }
+
+      double threshold = cfg.getDouble("bot.combat.xp_mending_threshold", 0.85);
+      ItemStack[] gear = new ItemStack[]{
+         inv.getHelmet(), inv.getChestplate(), inv.getLeggings(), inv.getBoots(),
+         inv.getItemInMainHand(), inv.getItemInOffHand()
+      };
+      int worstIdx = -1;
+      double worst = threshold;
+      for (int i = 0; i < gear.length; i++) {
+         double frac = this.mendableDurabilityFraction(gear[i]);
+         if (frac >= 0.0 && frac < worst) {
+            worst = frac;
+            worstIdx = i;
+         }
+      }
+      if (worstIdx < 0) {
+         return false;
+      }
+
+      ItemStack bottle = inv.getItem(bottleSlot);
+      bottle.setAmount(bottle.getAmount() - 1);
+      if (bottle.getAmount() <= 0) {
+         inv.setItem(bottleSlot, null);
+      }
+
+      ItemStack item = gear[worstIdx];
+      int xp = 3 + (int) (Math.random() * 9);
+      this.repairItem(item, xp * 2);
+      switch (worstIdx) {
+         case 0 -> inv.setHelmet(item);
+         case 1 -> inv.setChestplate(item);
+         case 2 -> inv.setLeggings(item);
+         case 3 -> inv.setBoots(item);
+         case 4 -> inv.setItemInMainHand(item);
+         default -> inv.setItemInOffHand(item);
+      }
+
+      bot.getWorld().playSound(bot.getLocation(), Sound.ENTITY_EXPERIENCE_BOTTLE_THROW, 0.6F, 1.0F);
+      bot.getWorld().playSound(bot.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.25F, 1.7F);
+      this.xpMendCooldown = 4;
+      if (combat) {
+         this.selectBestWeapon(bot);
+      }
+      return true;
+   }
+
+   /** Durability fraction (0..1) of a Mending item that can take damage, or -1 if not applicable. */
+   private double mendableDurabilityFraction(ItemStack item) {
+      if (item == null || item.getType() == Material.AIR) {
+         return -1.0;
+      }
+      short max = item.getType().getMaxDurability();
+      if (max <= 0) {
+         return -1.0;
+      }
+      ItemMeta meta = item.getItemMeta();
+      if (!(meta instanceof Damageable dmg) || !meta.hasEnchant(Enchantment.MENDING)) {
+         return -1.0;
+      }
+      return (double) (max - dmg.getDamage()) / (double) max;
+   }
+
+   /** Reduces an item's damage by {@code amount} (Mending repair), clamped at 0. */
+   private void repairItem(ItemStack item, int amount) {
+      ItemMeta meta = item.getItemMeta();
+      if (meta instanceof Damageable dmg) {
+         dmg.setDamage(Math.max(0, dmg.getDamage() - amount));
+         item.setItemMeta(meta);
+      }
    }
 
    void selectBestWeapon(Player bot) {
