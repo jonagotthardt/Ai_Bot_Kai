@@ -16,14 +16,14 @@ package com.jonasmp.ai.combat;
  */
 public enum CombatTactic {
 
-   /** Close, relentless pressure. Low blocking, attacks on small openings. Good vs. passive/turtling foes. */
-   AGGRESSIVE(0.55, 1.5, 2.6, 0.25, 0.45, false),
+   /** Close, relentless pressure. Low blocking, attacks on small openings, uses the full reach edge. Good vs. passive/turtling foes. */
+   AGGRESSIVE(0.60, 1.5, 3.0, 0.20, 0.42, false),
 
-   /** All-round default: solid spacing, balanced blocking, clean trades. */
-   BALANCED(0.80, 1.5, 3.0, 0.55, 0.60, false),
+   /** All-round default: solid spacing out to full reach, balanced blocking, clean crit trades. */
+   BALANCED(0.80, 1.5, 3.15, 0.55, 0.58, false),
 
    /** Kite & punish: max spacing, high blocking, retreats after each trade. Good vs. aggressive rushers/combo players. */
-   HIT_AND_RUN(0.90, 2.2, 3.6, 0.65, 0.65, true),
+   HIT_AND_RUN(0.90, 2.4, 3.6, 0.68, 0.65, true),
 
    /**
     * Offensive mirror: turns the opponent's own successful tempo against them. Its
@@ -33,7 +33,7 @@ public enum CombatTactic {
     * and distance. Sits in the bandit like any other arm, so it is reward-gated — Kai
     * only keeps mirroring when it actually out-trades that specific opponent.
     */
-   MIRROR(0.75, 1.6, 3.0, 0.40, 0.55, false);
+   MIRROR(0.75, 1.6, 3.15, 0.40, 0.55, false);
 
    /** Probability per eligible tick that the bot strafes sideways. */
    public final double strafeChance;
