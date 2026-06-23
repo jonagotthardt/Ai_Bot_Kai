@@ -1,7 +1,9 @@
 package com.jonasmp.ai.watcher;
 
+import com.jonasmp.ai.bootstrap.CoreBootstrap;
 import org.bukkit.Material;
 import org.bukkit.Statistic;
+import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
@@ -23,8 +25,6 @@ public class BotAutoEquipper {
       {"NETHERITE_CHESTPLATE", "1"},
       {"NETHERITE_LEGGINGS", "1"},
       {"NETHERITE_BOOTS", "1"},
-      {"MACE", "1"},
-      {"WIND_CHARGE", "64"},
       {"GOLDEN_APPLE", "16"},
       {"SHIELD", "1"}
    };
@@ -34,8 +34,6 @@ public class BotAutoEquipper {
       {"DIAMOND_CHESTPLATE", "1"},
       {"DIAMOND_LEGGINGS", "1"},
       {"DIAMOND_BOOTS", "1"},
-      {"MACE", "1"},
-      {"WIND_CHARGE", "64"},
       {"GOLDEN_APPLE", "16"},
       {"SHIELD", "1"}
    };
@@ -45,8 +43,6 @@ public class BotAutoEquipper {
       {"IRON_CHESTPLATE", "1"},
       {"IRON_LEGGINGS", "1"},
       {"IRON_BOOTS", "1"},
-      {"MACE", "1"},
-      {"WIND_CHARGE", "64"},
       {"GOLDEN_APPLE", "8"},
       {"SHIELD", "1"}
    };
@@ -119,75 +115,136 @@ public class BotAutoEquipper {
       return true;
    }
 
+   /**
+    * One acquisition per cycle (cooldown-gated), highest priority first: gear that keeps Kai
+    * alive and dangerous, then the consumables the operator wants stocked. Returns after the
+    * first buy it issues so a single command goes out per check.
+    */
    private void checkAndBuyMissing(Player bot) {
-      PlayerInventory inv = bot.getInventory();
+      // 1) Survival gear: a chestplate, a sword, a shield.
       if (!this.hasArmorEquipped() && !this.hasAnyArmorPiece()) {
-         if (!this.sendShopBuy("NETHERITE_CHESTPLATE", "1")) {
-            if (!this.sendShopBuy("DIAMOND_CHESTPLATE", "1")) {
-               this.sendShopBuy("IRON_CHESTPLATE", "1");
-            }
+         if (!this.sendShopBuy("NETHERITE_CHESTPLATE", "1") && !this.sendShopBuy("DIAMOND_CHESTPLATE", "1")) {
+            this.sendShopBuy("IRON_CHESTPLATE", "1");
          }
-      } else if (this.hasWeapon()
-         || this.hasInInventory("NETHERITE_SWORD", 1)
-         || this.hasInInventory("DIAMOND_SWORD", 1)
-         || this.hasInInventory("IRON_SWORD", 1)) {
-         int gapples = this.countInInventory(Material.GOLDEN_APPLE);
-         if (gapples < 4) {
-            int toBuy = Math.min(16, 4 - gapples + 8);
-            this.sendShopBuy("GOLDEN_APPLE", String.valueOf(toBuy));
-         } else {
-            int foodItems = 0;
-
-            for (Material food : new Material[]{Material.COOKED_BEEF, Material.COOKED_PORKCHOP, Material.GOLDEN_CARROT}) {
-               foodItems += this.countInInventory(food);
-            }
-
-            if (foodItems < 32) {
-               this.sendShopBuy("COOKED_BEEF", "16");
-            } else if (!this.hasInInventory("MACE", 1)) {
-               this.sendShopBuy("MACE", "1");
-            } else {
-               int windCharges = this.countInInventory(Material.WIND_CHARGE);
-               if (windCharges < 16) {
-                  this.sendShopBuy("WIND_CHARGE", String.valueOf(Math.min(64, 64 - windCharges)));
-               } else {
-                  if (!this.hasInInventory("SHIELD", 1)) {
-                     this.sendShopBuy("SHIELD", "1");
-                  }
-               }
-            }
-         }
-      } else if (!this.sendShopBuy("NETHERITE_SWORD", "1")) {
-         if (!this.sendShopBuy("DIAMOND_SWORD", "1")) {
+         return;
+      }
+      if (!this.hasWeapon()
+         && !this.hasInInventory("NETHERITE_SWORD", 1)
+         && !this.hasInInventory("DIAMOND_SWORD", 1)
+         && !this.hasInInventory("IRON_SWORD", 1)) {
+         if (!this.sendShopBuy("NETHERITE_SWORD", "1") && !this.sendShopBuy("DIAMOND_SWORD", "1")) {
             this.sendShopBuy("IRON_SWORD", "1");
          }
+         return;
       }
+      if (!this.hasInInventory("SHIELD", 1)) {
+         if (this.sendShopBuy("SHIELD", "1")) {
+            return;
+         }
+      }
+
+      // 2) Consumables, in priority order. restock() returns true once it has issued a buy.
+      FileConfiguration cfg = cfg();
+      if (this.restock("TOTEM_OF_UNDYING", cfg.getInt("bot.shop.keep_totems", 2))) {
+         return;
+      }
+      if (this.restock("GOLDEN_APPLE", cfg.getInt("bot.shop.keep_golden_apples", 16))) {
+         return;
+      }
+      if (this.restockFood(cfg.getInt("bot.shop.keep_food", 32))) {
+         return;
+      }
+      if (this.restock("EXPERIENCE_BOTTLE", cfg.getInt("bot.shop.keep_xp_bottles", 64))) {
+         return;
+      }
+      if (this.restock(cfg.getString("bot.shop.building_block_item", "COBBLESTONE"),
+            cfg.getInt("bot.shop.keep_building_blocks", 64))) {
+         return;
+      }
+      if (cfg.getBoolean("bot.shop.buy_ender_pearls", false)) {
+         this.restock("ENDER_PEARL", cfg.getInt("bot.shop.keep_ender_pearls", 16));
+      }
+   }
+
+   /** Tops a single stackable item up to {@code target}; issues at most one buy. */
+   private boolean restock(String item, int target) {
+      if (target <= 0) {
+         return false;
+      }
+      Material mat = Material.getMaterial(item);
+      if (mat == null) {
+         return false;
+      }
+      int have = this.countInInventory(mat);
+      if (have >= target) {
+         return false;
+      }
+      return this.sendShopBuy(item, String.valueOf(Math.min(64, target - have)));
+   }
+
+   private boolean restockFood(int target) {
+      if (target <= 0) {
+         return false;
+      }
+      int food = 0;
+      for (Material m : new Material[]{Material.COOKED_BEEF, Material.COOKED_PORKCHOP, Material.GOLDEN_CARROT}) {
+         food += this.countInInventory(m);
+      }
+      if (food >= target) {
+         return false;
+      }
+      return this.sendShopBuy("COOKED_BEEF", String.valueOf(Math.min(64, target - food)));
    }
 
    public void onCombatStart(Player bot) {
       this.aiBot.autoEquipBestGear(bot);
       this.aiBot.selectBestWeapon(bot);
-      if (this.countInInventory(Material.GOLDEN_APPLE) < 2 && this.commandCooldown <= 0) {
+      // Quick pre-fight top-ups of the two life-savers.
+      if (this.commandCooldown <= 0 && this.countInInventory(Material.GOLDEN_APPLE) < 2) {
          this.sendShopBuy("GOLDEN_APPLE", "8");
-      }
-
-      if (!this.hasInInventory("MACE", 1) && this.commandCooldown <= 0) {
-         this.sendShopBuy("MACE", "1");
-      }
-
-      int windCharges = this.countInInventory(Material.WIND_CHARGE);
-      if (windCharges < 8 && this.commandCooldown <= 0) {
-         this.sendShopBuy("WIND_CHARGE", "32");
+      } else if (this.commandCooldown <= 0
+         && cfg().getInt("bot.shop.keep_totems", 2) > 0
+         && this.countInInventory(Material.TOTEM_OF_UNDYING) < 1) {
+         this.sendShopBuy("TOTEM_OF_UNDYING", "1");
       }
    }
 
    /**
-    * Kai 2.0 has no economy/shop integration, so acquisition via a shop is a
-    * no-op. The bot equips from whatever is already in its inventory (managed by
-    * {@link AIPlayerBot#autoEquipBestGear} / {@link AIPlayerBot#selectBestWeapon}).
+    * Issues a buy by running the configured shop command (default {@code /shopbuy {item} {amount}})
+    * as the bot itself, so it goes through the server's real economy exactly like a human player.
+    * Returns true when a command was dispatched (used to throttle to one buy per cycle); the next
+    * inventory check decides whether it actually succeeded.
     */
    private boolean sendShopBuy(String item, String amount) {
-      return false;
+      if (this.commandCooldown > 0) {
+         return false;
+      }
+      FileConfiguration cfg = cfg();
+      if (!cfg.getBoolean("bot.shop.enabled", true)) {
+         return false;
+      }
+      Player bot = this.nmsBot.getPlayer();
+      if (bot == null) {
+         return false;
+      }
+      String cmd = cfg.getString("bot.shop.buy_command", "shopbuy {item} {amount}")
+         .replace("{item}", item)
+         .replace("{amount}", amount);
+      try {
+         bot.performCommand(cmd);
+         this.commandCooldown = COMMAND_COOLDOWN_TICKS;
+         this.buyCooldown = 40;
+         CoreBootstrap.PLUGIN.getLogger().info("[BotAutoEquipper] Shop command: /" + cmd);
+         return true;
+      } catch (Exception ex) {
+         CoreBootstrap.PLUGIN.getLogger().warning("[BotAutoEquipper] Buy command failed: " + ex.getMessage());
+         this.commandCooldown = 16;
+         return false;
+      }
+   }
+
+   private static FileConfiguration cfg() {
+      return CoreBootstrap.PLUGIN.getConfig();
    }
 
    private boolean hasInInventory(String materialName, int amount) {
