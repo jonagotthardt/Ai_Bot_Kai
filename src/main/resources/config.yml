@@ -24,6 +24,13 @@ bot:
     adaptive: true
     # Predictive shield timing learned from the opponent's combo rhythm (Feature C.3).
     combo_defense: true
+    # XP-bottle mending: in safe windows Kai throws experience bottles to keep
+    # Mending gear topped up, then switches straight back to his weapon. Only fires
+    # when a Mending piece is below 'xp_mending_threshold' durability and no attack
+    # is imminent (out of range / disengaged), so it never interrupts a trade.
+    xp_mending: true
+    # Repair when a Mending piece drops below this fraction of max durability (0.0-1.0).
+    xp_mending_threshold: 0.85
 
   shop:
     # Master switch for autonomous gear/consumable acquisition. When off, Kai only
