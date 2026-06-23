@@ -9,6 +9,14 @@ bot:
   # Display name of the FakePlayer Kai drives. Must be a valid player name.
   name: "Kai"
 
+  # Auto-join: spawn Kai by himself once the server has fully started, without
+  # needing a manual /kai spawn. He appears at his last saved position (or the
+  # main world spawn on first run). Set to false to require manual spawning.
+  auto_spawn: true
+  # Delay (server ticks) after enable before the auto-spawn fires, so the world
+  # and the FakePlayer backend are fully ready. 20 ticks = 1 second.
+  auto_spawn_delay_ticks: 100
+
   combat:
     # Master switch for the combat brain.
     enabled: true
