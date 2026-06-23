@@ -20,6 +20,10 @@ bot:
   combat:
     # Master switch for the combat brain.
     enabled: true
+    # Melee attack reach in blocks (center-to-center). Vanilla is 3.0; the default
+    # 3.15 grants Kai a small reach edge. Raise/lower this as a global rule. A clear
+    # line of sight is still required, so Kai never hits through walls.
+    reach: 3.15
     # Adaptive per-opponent tactic bandit (Feature A).
     adaptive: true
     # Predictive shield timing learned from the opponent's combo rhythm (Feature C.3).
