@@ -271,6 +271,7 @@ public class AIPlayerBot {
       }
 
       this.comboLearner.flushAll();
+      this.combatManager.flushLearning();
       this.nmsBot.despawn();
       CoreBootstrap.PLUGIN.getLogger().info("[AIPlayerBot] AI Bot despawned.");
    }
