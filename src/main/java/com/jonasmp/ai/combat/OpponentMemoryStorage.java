@@ -55,4 +55,34 @@ public final class OpponentMemoryStorage {
          CoreBootstrap.PLUGIN.getLogger().warning("[OpponentMemory] Save failed for " + profile.uuid + ": " + ex.getMessage());
       }
    }
+
+   /** The global cross-fight style lives alongside the per-opponent files ('_meta' is never a valid UUID). */
+   public MetaProfile loadMeta() {
+      File file = new File(this.folder, "_meta.json");
+      if (!file.exists()) {
+         return new MetaProfile();
+      }
+      try (FileReader reader = new FileReader(file)) {
+         MetaProfile meta = this.gson.fromJson(reader, MetaProfile.class);
+         if (meta == null) {
+            return new MetaProfile();
+         }
+         meta.normalise();
+         return meta;
+      } catch (Exception ex) {
+         CoreBootstrap.PLUGIN.getLogger().warning("[OpponentMemory] Meta load failed: " + ex.getMessage());
+         return new MetaProfile();
+      }
+   }
+
+   public void saveMeta(MetaProfile meta) {
+      if (meta == null) {
+         return;
+      }
+      try (FileWriter writer = new FileWriter(new File(this.folder, "_meta.json"))) {
+         this.gson.toJson(meta, writer);
+      } catch (Exception ex) {
+         CoreBootstrap.PLUGIN.getLogger().warning("[OpponentMemory] Meta save failed: " + ex.getMessage());
+      }
+   }
 }

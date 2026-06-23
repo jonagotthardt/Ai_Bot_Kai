@@ -17,12 +17,22 @@ public final class OpponentMemory {
 
    private final OpponentMemoryStorage storage = new OpponentMemoryStorage();
    private final Map<UUID, OpponentProfile> cache = new HashMap<>();
+   private final MetaProfile meta = this.storage.loadMeta();
+
+   /** Global cross-fight style, aggregated from every opponent. */
+   public MetaProfile getMeta() {
+      return this.meta;
+   }
 
    public OpponentProfile getOrCreate(UUID uuid, String name) {
       OpponentProfile profile = this.cache.get(uuid);
       if (profile == null) {
          profile = this.storage.load(uuid.toString(), name);
          profile.normalise();
+         // First time meeting this opponent: warm-start their bandit from Kai's accumulated style.
+         if (profile.totalUses() == 0) {
+            this.meta.seedInto(profile);
+         }
          this.cache.put(uuid, profile);
       }
       profile.encounters++;
@@ -30,16 +40,23 @@ public final class OpponentMemory {
       return profile;
    }
 
+   /** Folds a window outcome into the long-term cross-fight style (in addition to the per-opponent profile). */
+   public void recordMetaReward(CombatTactic tactic, double reward) {
+      this.meta.recordReward(tactic, reward);
+   }
+
    public void flush(UUID uuid) {
       OpponentProfile profile = this.cache.get(uuid);
       if (profile != null) {
          this.storage.save(profile);
       }
+      this.storage.saveMeta(this.meta);
    }
 
    public void flushAll() {
       for (OpponentProfile profile : this.cache.values()) {
          this.storage.save(profile);
       }
+      this.storage.saveMeta(this.meta);
    }
 }

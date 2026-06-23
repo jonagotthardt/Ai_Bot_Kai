@@ -94,6 +94,11 @@ public class BotCombatManager {
       this.reloadConfig();
    }
 
+   /** Persists all learned per-opponent profiles and the global cross-fight style (plugin shutdown). */
+   public void flushLearning() {
+      this.opponentMemory.flushAll();
+   }
+
    public void reset() {
       this.attackCooldown = 0;
       this.comboCount = 0;
@@ -293,6 +298,7 @@ public class BotCombatManager {
          double taken = this.aiBot.consumeDamageTaken();
          double reward = dealt - taken;
          this.activeProfile.recordReward(this.activeTactic, reward);
+         this.opponentMemory.recordMetaReward(this.activeTactic, reward);
          this.activeProfile.noteWindowStats(dealt, taken);
          this.rewardWindowTicks = 0;
          CombatTactic next = this.activeProfile.selectTactic();
@@ -312,7 +318,9 @@ public class BotCombatManager {
             double dealt = this.aiBot.consumeDamageDealt();
             double taken = this.aiBot.consumeDamageTaken();
             double scale = (double) REWARD_WINDOW_TICKS / (double) Math.max(1, this.rewardWindowTicks);
-            this.activeProfile.recordReward(this.activeTactic, (dealt - taken) * scale);
+            double reward = (dealt - taken) * scale;
+            this.activeProfile.recordReward(this.activeTactic, reward);
+            this.opponentMemory.recordMetaReward(this.activeTactic, reward);
          }
          this.opponentMemory.flush(this.adaptiveTargetId);
          this.debugLog("ADAPT_END " + this.activeProfile.summary());
