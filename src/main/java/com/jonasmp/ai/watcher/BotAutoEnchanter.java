@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 import org.bukkit.Material;
+import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
@@ -89,6 +90,9 @@ public class BotAutoEnchanter {
          return false;
       } else if (this.isAlreadyEnchanted(item)) {
          return false;
+      } else if (this.dispatchEnchantCommand(item)) {
+         // Routed through the server's /enchant command (legit, costs the bot resources).
+         return true;
       } else {
          String type = item.getType().name();
          Map<Enchantment, Integer> toApply = new HashMap<>();
@@ -172,6 +176,39 @@ public class BotAutoEnchanter {
          } else if (type.contains("SHIELD")) {
             this.enchantItem(hand, "SHIELD");
          }
+      }
+   }
+
+   /**
+    * When {@code bot.shop.use_enchant_command} is set, enchants the item by running the configured
+    * server command (default {@code /enchant {item}}) as the bot, instead of applying enchants
+    * directly. One command per cooldown window so a full-gear scan does not spam the server.
+    * Returns true when a command was dispatched (caller then stops the direct-enchant fallback).
+    */
+   private boolean dispatchEnchantCommand(ItemStack item) {
+      FileConfiguration cfg = CoreBootstrap.PLUGIN.getConfig();
+      if (!cfg.getBoolean("bot.shop.use_enchant_command", true)) {
+         return false;
+      }
+      if (this.enchantCooldown > 0) {
+         // Skip this item this pass; do NOT fall through to direct enchanting.
+         return true;
+      }
+      Player bot = this.nmsBot.getPlayer();
+      if (bot == null) {
+         return false;
+      }
+      String cmd = cfg.getString("bot.shop.enchant_command", "enchant {item}")
+         .replace("{item}", item.getType().name());
+      try {
+         bot.performCommand(cmd);
+         this.enchantCooldown = 10;
+         CoreBootstrap.PLUGIN.getLogger().info("[BotAutoEnchanter] Enchant command: /" + cmd);
+         return true;
+      } catch (Exception ex) {
+         CoreBootstrap.PLUGIN.getLogger().warning("[BotAutoEnchanter] Enchant command failed: " + ex.getMessage());
+         this.enchantCooldown = 16;
+         return true;
       }
    }
 
