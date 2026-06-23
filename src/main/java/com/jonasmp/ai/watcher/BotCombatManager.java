@@ -14,6 +14,7 @@ import org.bukkit.entity.Monster;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
+import org.bukkit.util.Vector;
 
 public class BotCombatManager {
    private final AIPlayerBot aiBot;
@@ -52,6 +53,9 @@ public class BotCombatManager {
    private static final int REWARD_WINDOW_TICKS = 20;
    /** Vanilla entity-interaction (attack) reach, measured center-to-center. Kai never swings past this. */
    private static final double ATTACK_REACH = 3.0;
+   /** Minimum attack charge for a critical hit (vanilla: 84.8%). */
+   private static final float CRIT_CHARGE = 0.848F;
+   private boolean critPending;
    private static final double PREDICT_MIN_CONFIDENCE = 0.5;
    private static final long PREDICT_LOOKAHEAD_MS = 450L;
    private static final long PREDICT_GRACE_MS = 100L;
@@ -525,18 +529,50 @@ public class BotCombatManager {
                   bot.setSprinting(false);
                }
 
-               nmsBot.walkRelative(forward, sideways);
-               if (this.jumpCritEnabled && bot.isOnGround() && this.jumpCooldown <= 0 && this.attackCooldown <= 2 && dist <= optimalMax) {
-                  nmsBot.jump();
-                  this.jumpCooldown = 12;
+               // Shield-aware offense: a sword swing into a raised shield is fully wasted, so circle to the
+               // target's flank (the shield only covers its front semicylinder). An axe instead WANTS the hit
+               // — it disables the shield for 5 s — so axe-wielding Kai keeps pressing head-on.
+               boolean targetShielding = this.isTargetShielding(target);
+               boolean swordVsShield = targetShielding && !this.isHoldingAxe(bot);
+               boolean shieldArc = swordVsShield && this.inShieldArc(bot, target);
+               if (shieldArc) {
+                  sideways = (double) this.strafeDir * 0.8;
+                  forward = Math.max(forward, 0.3);
+                  bot.setSprinting(true);
                }
 
-               if (attackReady) {
+               nmsBot.walkRelative(forward, sideways);
+
+               boolean grounded = bot.isOnGround();
+               // Crit setup: at full charge, on a clean trade (not eating burst, not flanking a shield), hop so
+               // the next *descending* swing lands as a guaranteed vanilla crit (+50% damage).
+               boolean wantCrit = this.jumpCritEnabled && !underBurst && !swordVsShield
+                  && dist <= optimalMax && bot.getAttackCooldown() >= 0.95F;
+               if (wantCrit && grounded && this.jumpCooldown <= 0) {
+                  nmsBot.jump();
+                  this.jumpCooldown = 12;
+                  this.critPending = true;
+               }
+               // Abandon a pending crit if we landed without the descending window opening up.
+               if (this.critPending && grounded && this.jumpCooldown < 8) {
+                  this.critPending = false;
+               }
+
+               boolean doAttack = attackReady && !shieldArc;
+               if (this.critPending) {
+                  doAttack = this.canCritNow(bot);
+               }
+               if (doAttack) {
+                  boolean crit = this.canCritNow(bot);
                   if (this.isShieldBlocking) {
                      this.releaseShield(nmsBot);
                   }
-
+                  // Sprinting downgrades a crit into a sprint-knockback attack, so drop sprint on the crit tick.
+                  if (crit) {
+                     bot.setSprinting(false);
+                  }
                   this.performAttack(bot, nmsBot, target, dist, sideways);
+                  this.critPending = false;
                }
 
                if (dist > optimalMax + 1.0) {
@@ -684,6 +720,37 @@ public class BotCombatManager {
    private boolean isHoldingSword(Player bot) {
       ItemStack hand = bot.getInventory().getItemInMainHand();
       return hand != null && hand.getType().name().contains("SWORD");
+   }
+
+   private boolean isHoldingAxe(Player bot) {
+      ItemStack hand = bot.getInventory().getItemInMainHand();
+      return hand != null && hand.getType().name().endsWith("_AXE");
+   }
+
+   private boolean isTargetShielding(Entity target) {
+      return target instanceof Player p && p.isBlocking();
+   }
+
+   /** True while Kai stands within the target's frontal arc, where a held shield blocks. */
+   private boolean inShieldArc(Player bot, Entity target) {
+      Vector facing = target.getLocation().getDirection().setY(0.0);
+      Vector toBot = bot.getLocation().toVector().subtract(target.getLocation().toVector()).setY(0.0);
+      if (facing.lengthSquared() < 1.0E-4 || toBot.lengthSquared() < 1.0E-4) {
+         return true;
+      }
+      return facing.normalize().dot(toBot.normalize()) > 0.0;
+   }
+
+   /** Vanilla crit window: airborne, descending, out of water, and charge >= 84.8%. */
+   private boolean canCritNow(Player bot) {
+      if (bot.isOnGround() || bot.isInWater()) {
+         return false;
+      }
+      boolean descending = bot.getVelocity().getY() < 0.0 || (this.jumpCooldown > 0 && this.jumpCooldown <= 6);
+      if (!descending) {
+         return false;
+      }
+      return bot.getAttackCooldown() >= CRIT_CHARGE;
    }
 
    private boolean hasShieldInOffhand(Player bot) {
