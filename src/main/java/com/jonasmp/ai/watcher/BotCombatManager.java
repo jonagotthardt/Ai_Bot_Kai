@@ -14,6 +14,7 @@ import org.bukkit.entity.Monster;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.util.Vector;
 
 public class BotCombatManager {
@@ -544,10 +545,13 @@ public class BotCombatManager {
                nmsBot.walkRelative(forward, sideways);
 
                boolean grounded = bot.isOnGround();
-               // Crit setup: at full charge, on a clean trade (not eating burst, not flanking a shield), hop so
-               // the next *descending* swing lands as a guaranteed vanilla crit (+50% damage).
-               boolean wantCrit = this.jumpCritEnabled && !underBurst && !swordVsShield
-                  && dist <= optimalMax && bot.getAttackCooldown() >= 0.95F;
+               boolean fullCharge = bot.getAttackCooldown() >= 0.95F;
+               // Damage discipline: in a clean trade (not eating a burst, not fleeing, not feeding a shield) Kai
+               // holds fire until full charge and lands a *descending* jump-crit — ~150% damage instead of the
+               // ~40% of a half-charged spam swing. Under burst/flee it drops this and trades fast to interrupt.
+               boolean preferCrit = this.jumpCritEnabled && !underBurst && !fleeing && !swordVsShield
+                  && dist <= optimalMax;
+               boolean wantCrit = preferCrit && fullCharge;
                if (wantCrit && grounded && this.jumpCooldown <= 0) {
                   nmsBot.jump();
                   this.jumpCooldown = 12;
@@ -558,9 +562,14 @@ public class BotCombatManager {
                   this.critPending = false;
                }
 
-               boolean doAttack = attackReady && !shieldArc;
+               boolean doAttack;
                if (this.critPending) {
                   doAttack = this.canCritNow(bot);
+               } else if (preferCrit) {
+                  // Hold low-charge swings, but never waste a fully-charged window when the jump is still on cooldown.
+                  doAttack = fullCharge && this.jumpCooldown > 0 && !shieldArc;
+               } else {
+                  doAttack = attackReady && !shieldArc;
                }
                if (doAttack) {
                   boolean crit = this.canCritNow(bot);
@@ -760,15 +769,15 @@ public class BotCombatManager {
 
    private void selectBestWeapon(Player bot, NMSBot nmsBot) {
       int bestSlot = -1;
-      int bestScore = -1;
+      double bestDps = 0.0;
       PlayerInventory inv = bot.getInventory();
 
       for (int i = 0; i < 9; i++) {
          ItemStack item = inv.getItem(i);
          if (item != null) {
-            int score = this.weaponScore(item.getType());
-            if (score > bestScore) {
-               bestScore = score;
+            double dps = this.estimateMeleeDamage(item);
+            if (dps > bestDps) {
+               bestDps = dps;
                bestSlot = i;
             }
          }
@@ -778,6 +787,67 @@ public class BotCombatManager {
          nmsBot.selectHotbarSlot(bestSlot);
          this.lastAttackSlot = bestSlot;
       }
+   }
+
+   /**
+    * Enchant-aware melee strength used to pick the genuinely strongest weapon: expected DPS =
+    * (base per-hit damage + Sharpness bonus) x attack speed. This lets a Sharpness-V diamond sword
+    * out-rank a plain netherite one, and keeps the high-DPS sword over the slower axe by default
+    * (the axe is still used opportunistically for shield-breaking in the attack logic).
+    * Returns -1 for food / non-weapons.
+    */
+   private double estimateMeleeDamage(ItemStack item) {
+      if (item == null) {
+         return -1.0;
+      }
+      Material t = item.getType();
+      if (t.isEdible()) {
+         return -1.0;
+      }
+      double base = this.baseWeaponDamage(t);
+      if (base <= 0.0) {
+         return -1.0;
+      }
+      double speed = this.weaponAttackSpeed(t);
+      double perHit = base;
+      int sharp = item.getEnchantmentLevel(Enchantment.SHARPNESS);
+      if (sharp > 0) {
+         perHit += 0.5 * sharp + 0.5;
+      }
+      return perHit * speed;
+   }
+
+   /** Vanilla weapon-only base attack damage (displayed value). */
+   private double baseWeaponDamage(Material t) {
+      String n = t.name();
+      if (n.endsWith("_SWORD")) {
+         if (t == Material.NETHERITE_SWORD) return 8.0;
+         if (t == Material.DIAMOND_SWORD) return 7.0;
+         if (t == Material.IRON_SWORD) return 6.0;
+         if (t == Material.STONE_SWORD) return 5.0;
+         return 4.0;
+      }
+      if (n.endsWith("_AXE")) {
+         if (t == Material.NETHERITE_AXE) return 10.0;
+         if (t == Material.DIAMOND_AXE) return 9.0;
+         if (t == Material.IRON_AXE) return 9.0;
+         if (t == Material.STONE_AXE) return 9.0;
+         return 7.0;
+      }
+      if (t == Material.TRIDENT) return 9.0;
+      if (n.equals("MACE")) return 6.0;
+      if (n.endsWith("_PICKAXE") || n.endsWith("_SHOVEL") || n.endsWith("_HOE")) return 2.5;
+      return 0.0;
+   }
+
+   /** Vanilla attack speed (attacks per second) for the weapon classes Kai uses. */
+   private double weaponAttackSpeed(Material t) {
+      String n = t.name();
+      if (n.endsWith("_SWORD")) return 1.6;
+      if (n.endsWith("_AXE")) return 1.0;
+      if (t == Material.TRIDENT) return 1.1;
+      if (n.equals("MACE")) return 0.6;
+      return 1.0;
    }
 
    private int weaponScore(Material type) {
