@@ -1,0 +1,72 @@
+# JonaSMP_AI v1 Fixed — Standard-Konfiguration
+# Diese Datei wird beim ersten Start ins Plugin-Datenverzeichnis kopiert.
+
+# ─────────────────────────────────────────────
+# AI Gateway (HuggingFace + OpenRouter)
+# ─────────────────────────────────────────────
+ai:
+  enabled: true
+  provider: openrouter
+  model: meta-llama/llama-3.3-70b-instruct
+  timeout_ms: 8000
+  huggingface_api_key: ""
+  openrouter_api_key: ""
+  openrouter_model: meta-llama/llama-3.3-70b-instruct
+  openrouter_timeout_ms: 8000
+  direct_openrouter_enabled: true
+  backend_url: "http://127.0.0.1:8000"
+  web_search:
+    enabled: false
+
+# ─────────────────────────────────────────────
+# Moderation & Pipeline
+# ─────────────────────────────────────────────
+moderation:
+  block_threshold: 0.65
+  warn_threshold: 0.35
+
+pipeline:
+  local_enabled: true
+  backend_fallback: true
+  block_threshold: 0.55
+  warn_threshold: 0.20
+  ban_threshold: 0.90
+  kick_threshold: 0.75
+  mute_threshold: 0.65
+
+# ─────────────────────────────────────────────
+# Voice Moderation
+# ─────────────────────────────────────────────
+voice_moderation:
+  kick_after_strikes: 5
+  strike_decay_minutes: 30
+
+# ─────────────────────────────────────────────
+# Performance & Cache
+# ─────────────────────────────────────────────
+performance:
+  enable_cache: true
+  cache_ttl_seconds: 300
+  physical_memory_warning: true
+
+# ─────────────────────────────────────────────
+# Bot Chat (Self-initiated messages)
+# ─────────────────────────────────────────────
+bot:
+  chat:
+    enabled: true
+    self_chat_interval_seconds: 30
+    max_message_length: 60
+    use_ai_generation: true
+  combat:
+    enabled: true
+    strafe_chance: 0.7
+    jump_crit: true
+    w_tap: true
+
+# ─────────────────────────────────────────────
+# Teacher Mode
+# ─────────────────────────────────────────────
+teacher_mode:
+  enabled: true
+  public_shaming: false

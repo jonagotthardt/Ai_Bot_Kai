@@ -1,0 +1,24 @@
+# Kai 2.0 configuration.
+#
+# Kai 2.0's behaviour (combat timing, goal priorities, movement) is currently
+# tuned in code (BotCombatManager / BotGoalPlanner / NMSBot). This file is
+# reserved for future live-tunable settings; the control loop runs every tick
+# for player-like responsiveness.
+
+bot:
+  # Display name of the FakePlayer Kai drives. Must be a valid player name.
+  name: "Kai"
+
+  combat:
+    # Master switch for the combat brain.
+    enabled: true
+    # Adaptive per-opponent tactic bandit (Feature A).
+    adaptive: true
+    # Predictive shield timing learned from the opponent's combo rhythm (Feature C.3).
+    combo_defense: true
+
+  building:
+    # Autonomous, non-combat block placement (auto-torch / auto-fill-hole / auto-bridge
+    # while idle or exploring). Off by default: Kai is a PvP entity and should not place
+    # blocks on its own unless you opt in. Survival MLG and emergency burrow are separate.
+    auto_assist: false

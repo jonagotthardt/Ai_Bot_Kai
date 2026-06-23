@@ -1,0 +1,16 @@
+name: Kai
+version: ${project.version}
+main: com.jonasmp.ai.JonaSMP_AI
+api-version: '26.1.2'
+description: ${project.description}
+author: jonagotthardt
+softdepend: [FakePlayerPlugin, fakeplayer, LuckPerms]
+commands:
+  kai:
+    description: Control the Kai AI agent.
+    usage: /kai <spawn|despawn|come|say>
+    permission: kai.command
+permissions:
+  kai.command:
+    description: Allows controlling the Kai AI agent.
+    default: op
