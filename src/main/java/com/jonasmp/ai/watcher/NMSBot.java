@@ -1598,16 +1598,6 @@ public class NMSBot {
       }
    }
 
-   public void sendChat(String message) {
-      if (this.spawned && this.craftPlayer != null) {
-         try {
-            this.craftPlayer.chat(message);
-         } catch (Exception var3) {
-            CoreBootstrap.PLUGIN.getLogger().fine("[NMSBot] sendChat failed: " + var3.getMessage());
-         }
-      }
-   }
-
    public void performCommand(String command) {
       if (this.spawned && this.craftPlayer != null) {
          try {
