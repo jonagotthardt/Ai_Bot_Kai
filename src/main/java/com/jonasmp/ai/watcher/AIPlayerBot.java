@@ -78,6 +78,7 @@ public class AIPlayerBot {
    private final BurrowManager burrowManager;
    private final BotCombatManager combatManager;
    private final com.jonasmp.ai.combat.ComboLearner comboLearner = new com.jonasmp.ai.combat.ComboLearner();
+   private final boolean buildAssistEnabled = CoreBootstrap.PLUGIN.getConfig().getBoolean("bot.building.auto_assist", false);
    private final BotAutoEquipper autoEquipper;
    private final BotAutoEnchanter autoEnchanter;
    private List<Entity> cachedNearbyEntities;
@@ -917,7 +918,8 @@ public class AIPlayerBot {
                               AIPlayerBot.this.nmsBot.walkRelative(0.15, 0.0);
                            }
 
-                           if (this.tick % 200 == 0
+                           if (AIPlayerBot.this.buildAssistEnabled
+                              && this.tick % 200 == 0
                               && !AIPlayerBot.this.combatManager.isInCombat()
                               && (
                                  AIPlayerBot.this.goalPlanner.getCurrentGoal() == BotGoalPlanner.GoalType.IDLE

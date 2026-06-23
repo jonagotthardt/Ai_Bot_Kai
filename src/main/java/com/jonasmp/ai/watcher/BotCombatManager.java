@@ -50,6 +50,8 @@ public class BotCombatManager {
    private static final double AXE_OPTIMAL_MIN = 1.0;
    private static final double AXE_OPTIMAL_MAX = 2.5;
    private static final int REWARD_WINDOW_TICKS = 20;
+   /** Vanilla entity-interaction (attack) reach, measured center-to-center. Kai never swings past this. */
+   private static final double ATTACK_REACH = 3.0;
    private static final double PREDICT_MIN_CONFIDENCE = 0.5;
    private static final long PREDICT_LOOKAHEAD_MS = 450L;
    private static final long PREDICT_GRACE_MS = 100L;
@@ -602,6 +604,9 @@ public class BotCombatManager {
             + " cooldown="
             + this.attackCooldown
       );
+      if (!this.canReach(bot, target, dist)) {
+         return;
+      }
       nmsBot.swingMainHand();
       bot.attack(target);
       this.comboCount++;
@@ -609,6 +614,19 @@ public class BotCombatManager {
       this.wTapCooldown = 6;
       this.blockHitCooldown = 3;
       nmsBot.walkRelative(0.4, sideways * 0.3);
+   }
+
+   /**
+    * Legitimacy gate for melee: only land a hit within vanilla reach (3.0 blocks,
+    * center-to-center) and with a clear line of sight, so Kai can never reach past
+    * a real player nor strike through walls. Movement still closes the gap; this only
+    * suppresses the actual damage swing when it would be illegal.
+    */
+   private boolean canReach(Player bot, Entity target, double dist) {
+      if (dist > ATTACK_REACH) {
+         return false;
+      }
+      return bot.hasLineOfSight(target);
    }
 
    private Entity findPriorityTarget(Player bot) {
