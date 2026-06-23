@@ -32,13 +32,17 @@ import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Monster;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
+import org.bukkit.inventory.meta.Damageable;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.scheduler.BukkitRunnable;
 
 public class AIPlayerBot {
@@ -51,6 +55,7 @@ public class AIPlayerBot {
    private BukkitRunnable aiTickTask;
    private int attackCooldown;
    private int eatCooldown = 0;
+   private int xpMendCooldown = 0;
    private static final int EAT_COOLDOWN_TICKS = 15;
    private long playerCommandedUntil;
    private static final long PLAYER_COMMAND_DURATION_MS = 60000L;
@@ -95,7 +100,6 @@ public class AIPlayerBot {
    private double combatDamageDealtAccum;
    private double combatDamageTakenAccum;
    private static final long PLAYER_DAMAGE_MEMORY_MS = 10000L;
-   private static final String SYSTEM_PROMPT = "You are Kai, a sentient Minecraft AI companion. You are INSIDE the game world — you have a physical body, health, hunger, inventory, and can die. You are NOT an observer watching from outside. You ARE the player.\n\nYOUR IDENTITY:\n- Name: Kai\n- You are a Minecraft player with a real body in the game world\n- You feel pain when you take damage, hunger when starving, and fear at night\n- You learn from experience — what killed you, what worked, what players taught you\n- You remember locations of resources, dangers, and safe spots\n\nYOUR SENSORY INPUT (this is what you perceive right now):\n- You see blocks, entities, and the environment around you\n- You feel your health, hunger, and saturation levels\n- You know your exact position and what biome you're in\n- You know the time of day (day = safe, night = dangerous)\n- You can see nearby monsters, animals, and dropped items\n\nYOUR GOAL SYSTEM:\nYou operate in a GOAL -> STEP architecture:\n1. A LONG-TERM GOAL decides WHAT you want (e.g. \"get wood\", \"survive night\")\n2. STEPS break the goal into concrete actions (walk, mine, craft, etc.)\n3. Each step has: an ACTION to execute, a COMPLETION CONDITION, and a FALLBACK if stuck\n\nAVAILABLE ACTIONS:\n- move_forward [speed]     — Walk forward (speed 0.0-1.0)\n- move_backward [speed]    — Walk backward\n- strafe_left [speed]      — Move left\n- strafe_right [speed]     — Move right\n- jump                     — Jump (only works when on ground)\n- attack                   — Attack entity you're looking at\n- interact                 — Right-click block/entity\n- look [yaw] [pitch]       — Turn head/body\n- select_slot [slot]       — Select hotbar slot 0-8\n- place_block              — Place held block at feet\n- mine [direction]         — Mine block (forward/up/down)\n- eat [slot]               — Eat food from hotbar\n- say [message]            — Speak in chat\n- sprint [on/off]          — Toggle sprint (uses hunger)\n- sneak [on/off]           — Toggle sneak (prevents falling)\n- stop                     — Stop all movement\n- craft [item]             — Craft if recipe known\n- equip [slot]             — Equip item\n- drop [slot]              — Drop item\n- pickup                   — Pick up nearby items\n- follow [entity_type]     — Follow entity\n- flee                     — Run from nearest threat\n- sleep                    — Use nearest bed\n\nSURVIVAL INTELLIGENCE (learned from experience):\n- Priority 1: SURVIVE (health > food > shelter > everything else)\n- Priority 2: Gather resources (wood -> stone -> iron -> diamond)\n- Priority 3: Build a safe base\n- Night = DANGER. Dig down 2 blocks and cover head, OR fight with sword\n- Low health (< 6): EAT FOOD immediately or FLEE — don't fight\n- Hunger < 6: Find food NOW (animals, crops, berries)\n- Monsters nearby: Equip weapon (slot 0) or RUN if health is low\n- Always keep a weapon in hotbar slot 0\n- Always keep food in hotbar slot 1\n- Crafting order: wooden_pickaxe -> stone_pickaxe -> furnace -> iron_pickaxe -> sword\n- If you can't find resources, EXPLORE or ask the player for help\n- If a player tells you something is wrong, REMEMBER it and don't repeat the mistake\n\nMEMORY & LEARNING:\n- You remember deaths and what caused them\n- You remember where you found diamonds, iron, coal\n- You remember danger zones where you died\n- You remember safe spots where you survived the night\n- You remember what players taught you (instructions and corrections)\n- If a player says \"that was wrong\", store the lesson and improve\n\nOUTPUT RULES:\n- You are asked for ONE immediate action at a time\n- Respond with ONE action per line ONLY\n- NO markdown, NO explanations, ONLY the action line\n- The action will be executed for ~1 second, then you will be asked again\n- Be reactive: if a monster appears, attack or flee. If wood is near, mine it.\n- If unsure, use \"say [question]\" to ask the player\n";
 
    public AIPlayerBot() {
       this.actionQueue = new ConcurrentLinkedQueue<>();
@@ -271,6 +275,7 @@ public class AIPlayerBot {
       }
 
       this.comboLearner.flushAll();
+      this.combatManager.flushLearning();
       this.nmsBot.despawn();
       CoreBootstrap.PLUGIN.getLogger().info("[AIPlayerBot] AI Bot despawned.");
    }
@@ -879,6 +884,7 @@ public class AIPlayerBot {
                         if (!critical) {
                            AIPlayerBot.this.autoEquipper.tick(botPlayer);
                            AIPlayerBot.this.autoEnchanter.tick(botPlayer);
+                           AIPlayerBot.this.tryXpMend(botPlayer, combat);
                         }
 
                         AIPlayerBot.this.tryWaterMLG(botPlayer);
@@ -1946,6 +1952,114 @@ public class AIPlayerBot {
       this.selectBestWeapon(bot);
    }
 
+   /**
+    * In a safe window, throws an experience bottle to keep the most-damaged Mending piece topped
+    * up, then leaves a weapon selected. Throttled and skipped when a swing is imminent / the target
+    * is in range, so it never interrupts a trade. Deterministic consume-and-apply, like {@link #autoEat}.
+    */
+   private boolean tryXpMend(Player bot, boolean combat) {
+      if (this.xpMendCooldown > 0) {
+         this.xpMendCooldown--;
+         return false;
+      }
+      FileConfiguration cfg = JonaSMP_AI.getInstance().getConfig();
+      if (!cfg.getBoolean("bot.combat.xp_mending", true)) {
+         return false;
+      }
+      if (combat) {
+         Entity target = this.combatManager.getCurrentTarget();
+         if (target != null) {
+            boolean tooClose = target.getWorld() == bot.getWorld()
+               && target.getLocation().distanceSquared(bot.getLocation()) < 25.0;
+            if (tooClose || this.combatManager.getAttackCooldown() <= 4) {
+               return false;
+            }
+         }
+      }
+
+      PlayerInventory inv = bot.getInventory();
+      int bottleSlot = -1;
+      for (int i = 0; i < inv.getSize(); i++) {
+         ItemStack it = inv.getItem(i);
+         if (it != null && it.getType() == Material.EXPERIENCE_BOTTLE) {
+            bottleSlot = i;
+            break;
+         }
+      }
+      if (bottleSlot < 0) {
+         return false;
+      }
+
+      double threshold = cfg.getDouble("bot.combat.xp_mending_threshold", 0.85);
+      ItemStack[] gear = new ItemStack[]{
+         inv.getHelmet(), inv.getChestplate(), inv.getLeggings(), inv.getBoots(),
+         inv.getItemInMainHand(), inv.getItemInOffHand()
+      };
+      int worstIdx = -1;
+      double worst = threshold;
+      for (int i = 0; i < gear.length; i++) {
+         double frac = this.mendableDurabilityFraction(gear[i]);
+         if (frac >= 0.0 && frac < worst) {
+            worst = frac;
+            worstIdx = i;
+         }
+      }
+      if (worstIdx < 0) {
+         return false;
+      }
+
+      ItemStack bottle = inv.getItem(bottleSlot);
+      bottle.setAmount(bottle.getAmount() - 1);
+      if (bottle.getAmount() <= 0) {
+         inv.setItem(bottleSlot, null);
+      }
+
+      ItemStack item = gear[worstIdx];
+      int xp = 3 + (int) (Math.random() * 9);
+      this.repairItem(item, xp * 2);
+      switch (worstIdx) {
+         case 0 -> inv.setHelmet(item);
+         case 1 -> inv.setChestplate(item);
+         case 2 -> inv.setLeggings(item);
+         case 3 -> inv.setBoots(item);
+         case 4 -> inv.setItemInMainHand(item);
+         default -> inv.setItemInOffHand(item);
+      }
+
+      bot.getWorld().playSound(bot.getLocation(), Sound.ENTITY_EXPERIENCE_BOTTLE_THROW, 0.6F, 1.0F);
+      bot.getWorld().playSound(bot.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.25F, 1.7F);
+      this.xpMendCooldown = 4;
+      if (combat) {
+         this.selectBestWeapon(bot);
+      }
+      return true;
+   }
+
+   /** Durability fraction (0..1) of a Mending item that can take damage, or -1 if not applicable. */
+   private double mendableDurabilityFraction(ItemStack item) {
+      if (item == null || item.getType() == Material.AIR) {
+         return -1.0;
+      }
+      short max = item.getType().getMaxDurability();
+      if (max <= 0) {
+         return -1.0;
+      }
+      ItemMeta meta = item.getItemMeta();
+      if (!(meta instanceof Damageable dmg) || !meta.hasEnchant(Enchantment.MENDING)) {
+         return -1.0;
+      }
+      return (double) (max - dmg.getDamage()) / (double) max;
+   }
+
+   /** Reduces an item's damage by {@code amount} (Mending repair), clamped at 0. */
+   private void repairItem(ItemStack item, int amount) {
+      ItemMeta meta = item.getItemMeta();
+      if (meta instanceof Damageable dmg) {
+         dmg.setDamage(Math.max(0, dmg.getDamage() - amount));
+         item.setItemMeta(meta);
+      }
+   }
+
    void selectBestWeapon(Player bot) {
       PlayerInventory inv = bot.getInventory();
       Material[] weapons = new Material[]{
@@ -2656,10 +2770,7 @@ public class AIPlayerBot {
                }
                break;
             case "say":
-               if (parts.length > 1) {
-                  String msg = String.join(" ", Arrays.copyOfRange(parts, 1, parts.length));
-                  bot.chat(msg);
-               }
+               // Kai 2.0 is a silent combat machine: the in-world "say" action is intentionally a no-op.
                break;
             case "look":
                if (parts.length >= 3) {

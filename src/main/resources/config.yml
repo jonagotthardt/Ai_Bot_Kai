@@ -9,13 +9,55 @@ bot:
   # Display name of the FakePlayer Kai drives. Must be a valid player name.
   name: "Kai"
 
+  # Auto-join: spawn Kai by himself once the server has fully started, without
+  # needing a manual /kai spawn. He appears at his last saved position (or the
+  # main world spawn on first run). Set to false to require manual spawning.
+  auto_spawn: true
+  # Delay (server ticks) after enable before the auto-spawn fires, so the world
+  # and the FakePlayer backend are fully ready. 20 ticks = 1 second.
+  auto_spawn_delay_ticks: 100
+
   combat:
     # Master switch for the combat brain.
     enabled: true
+    # Melee attack reach in blocks (center-to-center). Vanilla is 3.0; the default
+    # 3.15 grants Kai a small reach edge. Raise/lower this as a global rule. A clear
+    # line of sight is still required, so Kai never hits through walls.
+    reach: 3.15
     # Adaptive per-opponent tactic bandit (Feature A).
     adaptive: true
     # Predictive shield timing learned from the opponent's combo rhythm (Feature C.3).
     combo_defense: true
+    # XP-bottle mending: in safe windows Kai throws experience bottles to keep
+    # Mending gear topped up, then switches straight back to his weapon. Only fires
+    # when a Mending piece is below 'xp_mending_threshold' durability and no attack
+    # is imminent (out of range / disengaged), so it never interrupts a trade.
+    xp_mending: true
+    # Repair when a Mending piece drops below this fraction of max durability (0.0-1.0).
+    xp_mending_threshold: 0.85
+
+  shop:
+    # Master switch for autonomous gear/consumable acquisition. When off, Kai only
+    # equips/enchants from whatever is already in its inventory (no buying).
+    enabled: true
+    # Command Kai runs (as itself) to buy. {item} = Material name, {amount} = count.
+    # Adjust this to match your shop plugin's syntax — no recompile needed.
+    buy_command: "shopbuy {item} {amount}"
+    # Enchanting via the server command (legit, costs the bot resources) instead of
+    # applying enchants directly. {item} = Material name of the piece to enchant.
+    use_enchant_command: true
+    enchant_command: "enchant {item}"
+    # Minimum stock Kai keeps topped up (buys when below). 0 disables that item.
+    keep_golden_apples: 16
+    keep_food: 32
+    keep_totems: 2
+    keep_xp_bottles: 64
+    keep_building_blocks: 64
+    # Material used for speed-bridging over gaps/cliffs to avoid knockback/fall deaths.
+    building_block_item: "COBBLESTONE"
+    # Ender pearls are planned for later; off by default.
+    buy_ender_pearls: false
+    keep_ender_pearls: 16
 
   building:
     # Autonomous, non-combat block placement (auto-torch / auto-fill-hole / auto-bridge

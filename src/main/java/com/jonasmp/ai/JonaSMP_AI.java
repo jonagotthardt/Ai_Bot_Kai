@@ -7,6 +7,7 @@ import com.jonasmp.ai.watcher.AIPlayerBot;
 import com.jonasmp.ai.watcher.BotCombatListener;
 import com.jonasmp.ai.watcher.BotRespawnListener;
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -64,7 +65,38 @@ public final class JonaSMP_AI extends JavaPlugin {
          this.getLogger().warning("[Kai] Command 'kai' missing from plugin.yml.");
       }
 
+      this.scheduleAutoSpawn();
+
       this.getLogger().info("[Kai] Kai 2.0 enabled — deterministic PvP brain, no external backend.");
+   }
+
+   /**
+    * Spawns Kai on his own once the server has finished starting, if {@code bot.auto_spawn}
+    * is set. Runs on a delay so the world and FakePlayer backend are ready, then resolves a
+    * location (last saved position, else the main world spawn) — {@link AIPlayerBot#spawn}
+    * teleports to the saved position itself, so this only needs a valid starting world.
+    */
+   private void scheduleAutoSpawn() {
+      if (!this.getConfig().getBoolean("bot.auto_spawn", true)) {
+         return;
+      }
+      long delay = Math.max(1L, this.getConfig().getLong("bot.auto_spawn_delay_ticks", 100L));
+      Bukkit.getScheduler().runTaskLater(this, () -> {
+         if (this.aiPlayerBot == null || this.aiPlayerBot.isSpawned()) {
+            return;
+         }
+         Location loc = AIPlayerBot.loadLastLocation();
+         if (loc == null || loc.getWorld() == null) {
+            if (Bukkit.getWorlds().isEmpty()) {
+               this.getLogger().warning("[Kai] Auto-spawn skipped: no world loaded yet.");
+               return;
+            }
+            loc = Bukkit.getWorlds().get(0).getSpawnLocation();
+         }
+         String name = this.getConfig().getString("bot.name", "Kai");
+         this.getLogger().info("[Kai] Auto-spawning '" + name + "' after server start.");
+         this.aiPlayerBot.spawn(loc, name);
+      }, delay);
    }
 
    @Override

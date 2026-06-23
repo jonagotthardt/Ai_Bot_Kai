@@ -46,6 +46,17 @@ public final class OpponentProfile {
       this.name = name;
    }
 
+   /** Total tactic selections recorded so far; 0 means this opponent is untrained (eligible for a meta warm-start). */
+   public int totalUses() {
+      int sum = 0;
+      if (this.tacticUses != null) {
+         for (int u : this.tacticUses) {
+            sum += u;
+         }
+      }
+      return sum;
+   }
+
    /** Repairs arrays after deserialisation (e.g. if the tactic count changed between versions). */
    public void normalise() {
       int n = CombatTactic.values().length;

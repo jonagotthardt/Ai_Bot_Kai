@@ -48,12 +48,14 @@ public class BotCombatManager {
    private static final int SHIELD_HOLD_MAX = 12;
    private static final int SHIELD_COOLDOWN = 16;
    private static final double SWORD_OPTIMAL_MIN = 1.5;
-   private static final double SWORD_OPTIMAL_MAX = 3.0;
+   private static final double SWORD_OPTIMAL_MAX = 3.15;
    private static final double AXE_OPTIMAL_MIN = 1.0;
-   private static final double AXE_OPTIMAL_MAX = 2.5;
+   private static final double AXE_OPTIMAL_MAX = 2.6;
    private static final int REWARD_WINDOW_TICKS = 20;
-   /** Vanilla entity-interaction (attack) reach, measured center-to-center. Kai never swings past this. */
-   private static final double ATTACK_REACH = 3.0;
+   /** Default attack reach (center-to-center). Slightly past vanilla 3.0 — the small allowed edge. */
+   private static final double DEFAULT_ATTACK_REACH = 3.15;
+   /** Live attack reach, tunable via bot.combat.reach. Kai never swings past this. */
+   private double attackReach = DEFAULT_ATTACK_REACH;
    /** Minimum attack charge for a critical hit (vanilla: 84.8%). */
    private static final float CRIT_CHARGE = 0.848F;
    private boolean critPending;
@@ -94,6 +96,11 @@ public class BotCombatManager {
       this.reloadConfig();
    }
 
+   /** Persists all learned per-opponent profiles and the global cross-fight style (plugin shutdown). */
+   public void flushLearning() {
+      this.opponentMemory.flushAll();
+   }
+
    public void reset() {
       this.attackCooldown = 0;
       this.comboCount = 0;
@@ -119,6 +126,7 @@ public class BotCombatManager {
       this.blockHitEnabled = cfg.getBoolean("bot.combat.block_hit", true);
       this.adaptiveEnabled = cfg.getBoolean("bot.combat.adaptive", true);
       this.comboDefenseEnabled = cfg.getBoolean("bot.combat.combo_defense", true);
+      this.attackReach = cfg.getDouble("bot.combat.reach", DEFAULT_ATTACK_REACH);
    }
 
    /**
@@ -293,6 +301,7 @@ public class BotCombatManager {
          double taken = this.aiBot.consumeDamageTaken();
          double reward = dealt - taken;
          this.activeProfile.recordReward(this.activeTactic, reward);
+         this.opponentMemory.recordMetaReward(this.activeTactic, reward);
          this.activeProfile.noteWindowStats(dealt, taken);
          this.rewardWindowTicks = 0;
          CombatTactic next = this.activeProfile.selectTactic();
@@ -312,7 +321,9 @@ public class BotCombatManager {
             double dealt = this.aiBot.consumeDamageDealt();
             double taken = this.aiBot.consumeDamageTaken();
             double scale = (double) REWARD_WINDOW_TICKS / (double) Math.max(1, this.rewardWindowTicks);
-            this.activeProfile.recordReward(this.activeTactic, (dealt - taken) * scale);
+            double reward = (dealt - taken) * scale;
+            this.activeProfile.recordReward(this.activeTactic, reward);
+            this.opponentMemory.recordMetaReward(this.activeTactic, reward);
          }
          this.opponentMemory.flush(this.adaptiveTargetId);
          this.debugLog("ADAPT_END " + this.activeProfile.summary());
@@ -662,13 +673,13 @@ public class BotCombatManager {
    }
 
    /**
-    * Legitimacy gate for melee: only land a hit within vanilla reach (3.0 blocks,
-    * center-to-center) and with a clear line of sight, so Kai can never reach past
-    * a real player nor strike through walls. Movement still closes the gap; this only
-    * suppresses the actual damage swing when it would be illegal.
+    * Melee gate: only land a hit within {@link #attackReach} (default 3.15, tunable via
+    * bot.combat.reach) and with a clear line of sight, so Kai never strikes through walls.
+    * Movement still closes the gap; this only suppresses the actual damage swing when it
+    * would be out of reach.
     */
    private boolean canReach(Player bot, Entity target, double dist) {
-      if (dist > ATTACK_REACH) {
+      if (dist > this.attackReach) {
          return false;
       }
       return bot.hasLineOfSight(target);
